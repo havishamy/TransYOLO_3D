@@ -280,7 +280,7 @@ def run(
     jdict, stats = [], []
     # callbacks.run('on_val_start')
     pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)  # progress bar
-    for batch_i, (im, targets, paths, shapes, masks,edges) in enumerate(pbar):
+    for batch_i, (im, targets, paths, shapes, masks, edges) in enumerate(pbar):
         # callbacks.run('on_val_batch_start')
         with dt[0]:
             if cuda:
@@ -297,10 +297,11 @@ def run(
         # Inference
         with dt[1]:
             re = model(im) if compute_loss else (*model(im, augment=augment)[:2], None)
-            preds, protos, train_out=re[0];pre_edge=re[1]
+            preds, protos, train_out = re[0]
+            pre_edge = re[1]
         # Loss
         if compute_loss:
-            loss += compute_loss((train_out, protos), pre_edge,targets, masks,edges)[1]  # box, obj, cls
+            loss += compute_loss((train_out, protos), pre_edge, targets, masks, edges)[1]  # box, obj, cls
 
         # NMS
         targets[:, 2:] *= torch.tensor((width, height, width, height), device=device)  # to pixels
@@ -367,7 +368,16 @@ def run(
         if plots and batch_i < 3:
             if len(plot_masks):
                 plot_masks = torch.cat(plot_masks, dim=0)
-            plot_images_and_masks(im, targets, masks, edges, paths, save_dir / f"val_batch{batch_i}_labels.jpg",save_dir / f"val_batch{batch_i}_edge_labels.jpg", names)
+            plot_images_and_masks(
+                im,
+                targets,
+                masks,
+                edges,
+                paths,
+                save_dir / f"val_batch{batch_i}_labels.jpg",
+                save_dir / f"val_batch{batch_i}_edge_labels.jpg",
+                names,
+            )
             plot_images_and_masks(
                 im,
                 output_to_target(preds, max_det=15),
@@ -453,8 +463,16 @@ def parse_opt():
     inference settings.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=str, default="/home/dsj/code/yolov5_edge_v3/data/mydata.yaml", help="dataset.yaml path")
-    parser.add_argument("--weights", nargs="+", type=str, default="/home/dsj/code/yolov5_edge_v3/runs/train-seg/exp_lite/weights/best.pt", help="model path(s)")
+    parser.add_argument(
+        "--data", type=str, default="/home/dsj/code/yolov5_edge_v3/data/mydata.yaml", help="dataset.yaml path"
+    )
+    parser.add_argument(
+        "--weights",
+        nargs="+",
+        type=str,
+        default="/home/dsj/code/yolov5_edge_v3/runs/train-seg/exp_lite/weights/best.pt",
+        help="model path(s)",
+    )
     parser.add_argument("--batch-size", type=int, default=32, help="batch size")
     parser.add_argument("--imgsz", "--img", "--img-size", type=int, default=640, help="inference size (pixels)")
     parser.add_argument("--conf-thres", type=float, default=0.001, help="confidence threshold")
