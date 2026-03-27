@@ -225,7 +225,7 @@ class CrossConv(nn.Module):
         return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
 
 
-class C3(nn.Module):
+class C3_(nn.Module):
     """Implements a CSP Bottleneck module with three convolutions for enhanced feature extraction in neural networks."""
 
     def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5):
@@ -243,6 +243,45 @@ class C3(nn.Module):
         """Performs forward propagation using concatenated outputs from two convolutions and a Bottleneck sequence."""
         return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), 1))
 
+class SimAM(nn.Module):
+    """
+    SimAM: A Simple, Parameter-Free Attention Module for Convolutional Neural Networks.
+    Useful for glass detection as it emphasizes refractive distortion without adding FLOPs.
+    """
+    def __init__(self, e_lambda=1e-4):
+        super(SimAM, self).__init__()
+        self.activaton = nn.Sigmoid()
+        self.e_lambda = e_lambda
+
+    def forward(self, x):
+        # x shape: [batch, channel, height, width]
+        b, c, h, w = x.size()
+        n = w * h - 1
+        
+        # Calculate spatial variance to find "salient" pixels (reflections/edges)
+        x_minus_mu_sq = (x - x.mean(dim=[2, 3], keepdim=True)).pow(2)
+        y = x_minus_mu_sq / (4 * (x_minus_mu_sq.sum(dim=[2, 3], keepdim=True) / n + self.e_lambda)) + 0.5
+
+        return x * self.activaton(y)
+    
+class C3(nn.Module):
+    """Implements a CSP Bottleneck module with three convolutions for enhanced feature extraction in neural networks."""
+
+    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5):
+        """Initializes C3 module with options for channel count, bottleneck repetition, shortcut usage, group
+        convolutions, and expansion.
+        """
+        super().__init__()
+        c_ = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.cv2 = Conv(c1, c_, 1, 1)
+        self.cv3 = Conv(2 * c_, c2, 1)  # optional act=FReLU(c2)
+        self.m = nn.Sequential(*(Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n)))
+        self.attention = SimAM()
+
+    def forward(self, x):
+        """Performs forward propagation using concatenated outputs from two convolutions and a Bottleneck sequence."""
+        return self.attention(self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), 1)))
 
 class C3x(C3):
     """Extends the C3 module with cross-convolutions for enhanced feature extraction in neural networks."""

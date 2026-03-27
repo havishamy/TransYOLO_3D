@@ -103,11 +103,6 @@ class Metric:
         return self.r.mean() if len(self.r) else 0.0
 
     @property
-    def ap75(self):
-        """AP@0.75 of all classes. Returns (nc,) or []."""
-        return self.all_ap[:, 5] if len(self.all_ap) else []
-
-    @property
     def map50(self):
         """Mean AP@0.5 of all classes.
 
@@ -115,11 +110,6 @@ class Metric:
             float.
         """
         return self.all_ap[:, 0].mean() if len(self.all_ap) else 0.0
-
-    @property
-    def map75(self):
-        """Mean AP@0.75 of all classes. Returns float."""
-        return self.all_ap[:, 5].mean() if len(self.all_ap) else 0.0
 
     @property
     def map(self):

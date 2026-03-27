@@ -20,11 +20,17 @@
 *.data
 *.json
 *.cfg
+paper_RAL.md
+*.zip
 !setup.cfg
 !cfg/yolov3*.cfg
 
 storage.googleapis.com
 runs/*
+runs_edge/*
+runs_edge_p2/*
+runs_edge_p2_sim/*
+scripts/*
 data/*
 data/images/*
 !data/*.yaml

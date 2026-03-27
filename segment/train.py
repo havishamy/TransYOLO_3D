@@ -185,6 +185,7 @@ def train(hyp, opt, device, callbacks):
     else:
         model = SegmentationModel(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
     amp = check_amp(model)  # check AMP
+    #amp = True
 
     # Freeze
     freeze = [f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
@@ -319,7 +320,7 @@ def train(hyp, opt, device, callbacks):
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
     last_opt_step = -1
     maps = np.zeros(nc)  # mAP per class
-    results = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
+    results = (0, 0, 0, 0,0, 0, 0, 0, 0, 0, 0, 0, 0,0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = torch.cuda.amp.GradScaler(enabled=amp)
     stopper, stop = EarlyStopping(patience=opt.patience), False
@@ -345,18 +346,18 @@ def train(hyp, opt, device, callbacks):
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
-        mloss = torch.zeros(4, device=device)  # mean losses
+        mloss = torch.zeros(5, device=device)  # mean losses
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
         LOGGER.info(
-            ("\n" + "%11s" * 8)
-            % ("Epoch", "GPU_mem", "box_loss", "seg_loss", "obj_loss", "cls_loss", "Instances", "Size")
+            ("\n" + "%11s" * 9)
+            % ("Epoch", "GPU_mem", "box_loss", "seg_loss", "obj_loss", "cls_loss","edge_loss", "Instances", "Size")
         )
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
         optimizer.zero_grad()
-        for i, (imgs, targets, paths, _, masks) in pbar:  # batch ------------------------------------------------------
+        for i, (imgs, targets, paths, _, masks,edges) in pbar:  # batch ------------------------------------------------------
             # callbacks.run('on_train_batch_start')
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
@@ -382,8 +383,8 @@ def train(hyp, opt, device, callbacks):
 
             # Forward
             with torch.cuda.amp.autocast(amp):
-                pred = model(imgs)  # forward
-                loss, loss_items = compute_loss(pred, targets.to(device), masks=masks.to(device).float())
+                pred,pre_edge = model(imgs)  # forward
+                loss, loss_items = compute_loss(pred,pre_edge, targets.to(device), masks=masks.to(device),edge=edges.to(device))
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
@@ -408,7 +409,7 @@ def train(hyp, opt, device, callbacks):
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = f"{torch.cuda.memory_reserved() / 1e9 if torch.cuda.is_available() else 0:.3g}G"  # (GB)
                 pbar.set_description(
-                    ("%11s" * 2 + "%11.4g" * 6)
+                    ("%11s" * 2 + "%11.4g" * 7)
                     % (f"{epoch}/{epochs - 1}", mem, *mloss, targets.shape[0], imgs.shape[-1])
                 )
                 # callbacks.run('on_train_batch_end', model, ni, imgs, targets, paths)
@@ -418,13 +419,24 @@ def train(hyp, opt, device, callbacks):
                 # Mosaic plots
                 if plots:
                     if ni < 3:
-                        plot_images_and_masks(imgs, targets, masks, paths, save_dir / f"train_batch{ni}.jpg")
+                        plot_images_and_masks(imgs, targets, masks,edges, paths, save_dir / f"train_batch{ni}.jpg", save_dir / f"train_edge{ni}.jpg")
                     if ni == 10:
                         files = sorted(save_dir.glob("train*.jpg"))
                         logger.log_images(files, "Mosaics", epoch)
             # end batch ------------------------------------------------------------------------------------------------
-
-        # Scheduler
+        '''
+        plot_images_and_masks(
+                imgs,
+                targets,
+                masks,
+                pre_edge.detach(),
+                paths,
+                save_dir / f"test_{epoch}_gtmssk.jpg",
+                save_dir / f"test_{epoch}_prededge.jpg",
+                names,
+            )  # pred# Scheduler
+        '''
+        
         lr = [x["lr"] for x in optimizer.param_groups]  # for loggers
         scheduler.step()
 
@@ -527,7 +539,7 @@ def train(hyp, opt, device, callbacks):
 
         # callbacks.run('on_train_end', last, best, epoch, results)
         # on train end callback using genericLogger
-        logger.log_metrics(dict(zip(KEYS[4:16], results)), epochs)
+        logger.log_metrics(dict(zip(KEYS[5:18], results)), epochs)
         if not opt.evolve:
             logger.log_model(best, epoch)
         if plots:
@@ -547,11 +559,11 @@ def parse_opt(known=False):
     Supports both known and unknown args.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--weights", type=str, default=ROOT / "yolov5s-seg.pt", help="initial weights path")
-    parser.add_argument("--cfg", type=str, default="", help="model.yaml path")
-    parser.add_argument("--data", type=str, default=ROOT / "data/coco128-seg.yaml", help="dataset.yaml path")
+    parser.add_argument("--weights", type=str, default="", help="initial weights path")
+    parser.add_argument("--cfg", type=str, default="/home/dsj/code/yolov5_modify/models/segment/yolov5s_edge_v3.yaml", help="model.yaml path")
+    parser.add_argument("--data", type=str, default="/home/dsj/dataset/mydata/server/dataset.yaml", help="dataset.yaml path")
     parser.add_argument("--hyp", type=str, default=ROOT / "data/hyps/hyp.scratch-low.yaml", help="hyperparameters path")
-    parser.add_argument("--epochs", type=int, default=100, help="total training epochs")
+    parser.add_argument("--epochs", type=int, default=400, help="total training epochs")
     parser.add_argument("--batch-size", type=int, default=16, help="total batch size for all GPUs, -1 for autobatch")
     parser.add_argument("--imgsz", "--img", "--img-size", type=int, default=640, help="train, val image size (pixels)")
     parser.add_argument("--rect", action="store_true", help="rectangular training")
@@ -560,18 +572,18 @@ def parse_opt(known=False):
     parser.add_argument("--noval", action="store_true", help="only validate final epoch")
     parser.add_argument("--noautoanchor", action="store_true", help="disable AutoAnchor")
     parser.add_argument("--noplots", action="store_true", help="save no plot files")
-    parser.add_argument("--evolve", type=int, nargs="?", const=300, help="evolve hyperparameters for x generations")
+    parser.add_argument("--evolve", type=int, nargs="?", const=300,help="evolve hyperparameters for x generations")
     parser.add_argument("--bucket", type=str, default="", help="gsutil bucket")
     parser.add_argument("--cache", type=str, nargs="?", const="ram", help="image --cache ram/disk")
     parser.add_argument("--image-weights", action="store_true", help="use weighted image selection for training")
-    parser.add_argument("--device", default="", help="cuda device, i.e. 0 or 0,1,2,3 or cpu")
+    parser.add_argument("--device", default="4", help="cuda device, i.e. 0 or 0,1,2,3 or cpu")
     parser.add_argument("--multi-scale", action="store_true", help="vary img-size +/- 50%%")
     parser.add_argument("--single-cls", action="store_true", help="train multi-class data as single-class")
     parser.add_argument("--optimizer", type=str, choices=["SGD", "Adam", "AdamW"], default="SGD", help="optimizer")
     parser.add_argument("--sync-bn", action="store_true", help="use SyncBatchNorm, only available in DDP mode")
     parser.add_argument("--workers", type=int, default=8, help="max dataloader workers (per RANK in DDP mode)")
-    parser.add_argument("--project", default=ROOT / "runs/train-seg", help="save to project/name")
-    parser.add_argument("--name", default="exp", help="save to project/name")
+    parser.add_argument("--project", default="/home/dsj/code/yolov5_modify/runs_edge/train-seg", help="save to project/name")
+    parser.add_argument("--name", default="exp_3p", help="save to project/name")
     parser.add_argument("--exist-ok", action="store_true", help="existing project/name ok, do not increment")
     parser.add_argument("--quad", action="store_true", help="quad dataloader")
     parser.add_argument("--cos-lr", action="store_true", help="cosine LR scheduler")
@@ -648,35 +660,9 @@ def main(opt, callbacks=Callbacks()):
     else:
         # Hyperparameter evolution metadata (mutation scale 0-1, lower_limit, upper_limit)
         meta = {
-            "lr0": (1, 1e-5, 1e-1),  # initial learning rate (SGD=1E-2, Adam=1E-3)
-            "lrf": (1, 0.01, 1.0),  # final OneCycleLR learning rate (lr0 * lrf)
-            "momentum": (0.3, 0.6, 0.98),  # SGD momentum/Adam beta1
-            "weight_decay": (1, 0.0, 0.001),  # optimizer weight decay
-            "warmup_epochs": (1, 0.0, 5.0),  # warmup epochs (fractions ok)
-            "warmup_momentum": (1, 0.0, 0.95),  # warmup initial momentum
-            "warmup_bias_lr": (1, 0.0, 0.2),  # warmup initial bias lr
-            "box": (1, 0.02, 0.2),  # box loss gain
-            "cls": (1, 0.2, 4.0),  # cls loss gain
-            "cls_pw": (1, 0.5, 2.0),  # cls BCELoss positive_weight
-            "obj": (1, 0.2, 4.0),  # obj loss gain (scale with pixels)
-            "obj_pw": (1, 0.5, 2.0),  # obj BCELoss positive_weight
-            "iou_t": (0, 0.1, 0.7),  # IoU training threshold
-            "anchor_t": (1, 2.0, 8.0),  # anchor-multiple threshold
-            "anchors": (2, 2.0, 10.0),  # anchors per output grid (0 to ignore)
-            "fl_gamma": (0, 0.0, 2.0),  # focal loss gamma (efficientDet default gamma=1.5)
-            "hsv_h": (1, 0.0, 0.1),  # image HSV-Hue augmentation (fraction)
-            "hsv_s": (1, 0.0, 0.9),  # image HSV-Saturation augmentation (fraction)
-            "hsv_v": (1, 0.0, 0.9),  # image HSV-Value augmentation (fraction)
-            "degrees": (1, 0.0, 45.0),  # image rotation (+/- deg)
-            "translate": (1, 0.0, 0.9),  # image translation (+/- fraction)
-            "scale": (1, 0.0, 0.9),  # image scale (+/- gain)
-            "shear": (1, 0.0, 10.0),  # image shear (+/- deg)
-            "perspective": (0, 0.0, 0.001),  # image perspective (+/- fraction), range 0-0.001
-            "flipud": (1, 0.0, 1.0),  # image flip up-down (probability)
-            "fliplr": (0, 0.0, 1.0),  # image flip left-right (probability)
-            "mosaic": (1, 0.0, 1.0),  # image mixup (probability)
-            "mixup": (1, 0.0, 1.0),  # image mixup (probability)
-            "copy_paste": (1, 0.0, 1.0),
+            "lr0": (1, 1e-3, 1e-1),  # initial learning rate (SGD=1E-2, Adam=1E-3)
+            "lrf": (1, 0.001, 10.1),  # final OneCycleLR learning rate (lr0 * lrf)
+            "edge":(1,0.5,4.0),
         }  # segment copy-paste (probability)
 
         with open(opt.hyp, errors="ignore") as f:
@@ -717,25 +703,34 @@ def main(opt, callbacks=Callbacks()):
                 mp, s = 0.8, 0.2  # mutation probability, sigma
                 npr = np.random
                 npr.seed(int(time.time()))
-                g = np.array([meta[k][0] for k in hyp.keys()])  # gains 0-1
-                ng = len(meta)
+                
+                # 核心修复：只保留hyp中存在且meta中也存在的键，避免KeyError
+                valid_keys = [k for k in hyp.keys() if k in meta]
+                # 只对有效键计算g值
+                g = np.array([meta[k][0] for k in valid_keys])  # gains 0-1
+                ng = len(valid_keys)
                 v = np.ones(ng)
                 while all(v == 1):  # mutate until a change occurs (prevent duplicates)
                     v = (g * (npr.random(ng) < mp) * npr.randn(ng) * npr.random() * s + 1).clip(0.3, 3.0)
-                for i, k in enumerate(hyp.keys()):  # plt.hist(v.ravel(), 300)
-                    hyp[k] = float(x[i + 12] * v[i])  # mutate
+                
+                # 只对有效键进行变异，避免修改不在meta中的参数
+                for i, k in enumerate(valid_keys):  # plt.hist(v.ravel(), 300)
+                    # 确保x的索引不越界（x[i + 12]对应超参列）
+                    if i + 12 < len(x):
+                        hyp[k] = float(x[i + 12] * v[i])  # mutate
 
-            # Constrain to limits
+            # Constrain to limits：只处理meta中存在的键，避免约束不存在的参数
             for k, v in meta.items():
-                hyp[k] = max(hyp[k], v[1])  # lower limit
-                hyp[k] = min(hyp[k], v[2])  # upper limit
-                hyp[k] = round(hyp[k], 5)  # significant digits
+                if k in hyp:  # 确保hyp中有该键再约束
+                    hyp[k] = max(hyp[k], v[1])  # lower limit
+                    hyp[k] = min(hyp[k], v[2])  # upper limit
+                    hyp[k] = round(hyp[k], 5)  # significant digits
 
             # Train mutation
             results = train(hyp.copy(), opt, device, callbacks)
             callbacks = Callbacks()
             # Write mutation results
-            print_mutation(KEYS[4:16], results, hyp.copy(), save_dir, opt.bucket)
+            print_mutation(KEYS[5:18], results, hyp.copy(), save_dir, opt.bucket)
 
         # Plot results
         plot_evolve(evolve_csv)
@@ -761,3 +756,7 @@ def run(**kwargs):
 if __name__ == "__main__":
     opt = parse_opt()
     main(opt)
+
+'''
+/home/dsj/data1/dataset/LabPics_Chemistry_yolo_seg/images/test/73Eval.jpg
+'''

@@ -10,12 +10,31 @@ from ..metrics import bbox_iou
 from ..torch_utils import de_parallel
 from .general import crop_mask
 
+def Dice_loss(inputs, target, smooth = 1e-5):
+    if target.dim() == 3:
+        target=torch.unsqueeze(target, dim=-1)
+    n, c, h, w = inputs.size()
+    nt, ht, wt, ct = target.size()
+    if h != ht and w != wt:
+        inputs = F.interpolate(inputs, size=(ht, wt), mode="bilinear", align_corners=True)
+        
+    temp_inputs = inputs.transpose(1, 2).transpose(2, 3).contiguous().view(n, -1).to(torch.float32)
+    temp_target = target.view(n, -1).to(torch.float32)
+    intersection= (temp_inputs*temp_target).sum(dim=1)
+    #--------------------------------------------#
+    #   计算dice loss
+    #--------------------------------------------#
+    score = (2*intersection+ smooth) / (temp_target.sum(dim=1)+temp_inputs.sum(dim=1) + smooth)
+    dice_loss = 1 - torch.mean(score)
+    return dice_loss
 
 class ComputeLoss:
     """Computes the YOLOv5 model's loss components including classification, objectness, box, and mask losses."""
 
     def __init__(self, model, autobalance=False, overlap=False):
-        """Initialize compute loss function for YOLOv5 models with options for autobalancing and overlap handling."""
+        """Initializes the compute loss function for YOLOv5 models with options for autobalancing and overlap
+        handling.
+        """
         self.sort_obj_iou = False
         self.overlap = overlap
         device = next(model.parameters()).device  # get model device
@@ -44,7 +63,7 @@ class ComputeLoss:
         self.anchors = m.anchors
         self.device = device
 
-    def __call__(self, preds, targets, masks):  # predictions, targets, model
+    def __call__(self, preds, pre_edge, targets, masks, edge):  # predictions, targets, model
         """Evaluates YOLOv5 model's loss for given predictions, targets, and masks; returns total loss components."""
         p, proto = preds
         bs, nm, mask_h, mask_w = proto.shape  # batch size, number of masks, mask height, mask width
@@ -52,6 +71,7 @@ class ComputeLoss:
         lbox = torch.zeros(1, device=self.device)
         lobj = torch.zeros(1, device=self.device)
         lseg = torch.zeros(1, device=self.device)
+        ledge = torch.zeros(1, device=self.device)
         tcls, tbox, indices, anchors, tidxs, xywhn = self.build_targets(p, targets)  # targets
 
         # Losses
@@ -96,11 +116,11 @@ class ComputeLoss:
                     else:
                         mask_gti = masks[tidxs[i]][j]
                     lseg += self.single_mask_loss(mask_gti, pmask[j], proto[bi], mxyxy[j], marea[j])
-
             obji = self.BCEobj(pi[..., 4], tobj)
             lobj += obji * self.balance[i]  # obj loss
             if self.autobalance:
                 self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
+        ledge += Dice_loss(pre_edge, edge)
 
         if self.autobalance:
             self.balance = [x / self.balance[self.ssi] for x in self.balance]
@@ -108,10 +128,12 @@ class ComputeLoss:
         lobj *= self.hyp["obj"]
         lcls *= self.hyp["cls"]
         lseg *= self.hyp["box"] / bs
+        ledge *= self.hyp["edge"] / bs
 
-        loss = lbox + lobj + lcls + lseg
-        return loss * bs, torch.cat((lbox, lseg, lobj, lcls)).detach()
-
+        loss = lbox + lobj + lcls + lseg + ledge
+        return loss * bs, torch.cat((lbox, lseg, lobj, lcls, ledge)).detach()
+        
+       
     def single_mask_loss(self, gt_mask, pred, proto, xyxy, area):
         """Calculates and normalizes single mask loss for YOLOv5 between predicted and ground truth masks."""
         pred_mask = (pred @ proto.view(self.nm, -1)).view(-1, *proto.shape[1:])  # (n,32) @ (32,80,80) -> (n,80,80)
