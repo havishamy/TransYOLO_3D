@@ -1,14 +1,21 @@
 cff-version: 1.2.0
+
+message: If you use TransYOLO_3D, please cite this project and YOLOv5.
+
 preferred-citation:
   type: software
-  message: If you use YOLOv5, please cite it as below.
+  title: "TransYOLO_3D"
   authors:
-  - family-names: Jocher
-    given-names: Glenn
-    orcid: "https://orcid.org/0000-0001-5950-6979"
-  title: "YOLOv5 by Ultralytics"
-  version: 7.0
-  doi: 10.5281/zenodo.3908559
-  date-released: 2020-5-29
+  - family-names: Ding
+    given-names: Shijun
   license: AGPL-3.0
-  url: "https://github.com/ultralytics/yolov5"
+  url: https://github.com/havishamy/TransYOLO_3D
+
+references:
+  - type: software
+    title: YOLOv5 by Ultralytics
+    authors:
+      - family-names: Jocher
+        given-names: Glenn
+    doi: 10.5281/zenodo.3908559
+    url: https://github.com/ultralytics/yolov5
