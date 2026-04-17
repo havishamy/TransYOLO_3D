@@ -10,30 +10,31 @@ from ..metrics import bbox_iou
 from ..torch_utils import de_parallel
 from .general import crop_mask
 
-def Dice_loss(inputs, target, smooth = 1e-5):
+
+def Dice_loss(inputs, target, smooth=1e-5):
     if target.dim() == 3:
-        target=torch.unsqueeze(target, dim=-1)
-    n, c, h, w = inputs.size()
-    nt, ht, wt, ct = target.size()
+        target = torch.unsqueeze(target, dim=-1)
+    n, _c, h, w = inputs.size()
+    _nt, ht, wt, _ct = target.size()
     if h != ht and w != wt:
         inputs = F.interpolate(inputs, size=(ht, wt), mode="bilinear", align_corners=True)
-        
+
     temp_inputs = inputs.transpose(1, 2).transpose(2, 3).contiguous().view(n, -1).to(torch.float32)
     temp_target = target.view(n, -1).to(torch.float32)
-    intersection= (temp_inputs*temp_target).sum(dim=1)
-    #--------------------------------------------#
+    intersection = (temp_inputs * temp_target).sum(dim=1)
+    # --------------------------------------------#
     #   计算dice loss
-    #--------------------------------------------#
-    score = (2*intersection+ smooth) / (temp_target.sum(dim=1)+temp_inputs.sum(dim=1) + smooth)
+    # --------------------------------------------#
+    score = (2 * intersection + smooth) / (temp_target.sum(dim=1) + temp_inputs.sum(dim=1) + smooth)
     dice_loss = 1 - torch.mean(score)
     return dice_loss
+
 
 class ComputeLoss:
     """Computes the YOLOv5 model's loss components including classification, objectness, box, and mask losses."""
 
     def __init__(self, model, autobalance=False, overlap=False):
-        """Initializes the compute loss function for YOLOv5 models with options for autobalancing and overlap
-        handling.
+        """Initializes the compute loss function for YOLOv5 models with options for autobalancing and overlap handling.
         """
         self.sort_obj_iou = False
         self.overlap = overlap
@@ -132,8 +133,7 @@ class ComputeLoss:
 
         loss = lbox + lobj + lcls + lseg + ledge
         return loss * bs, torch.cat((lbox, lseg, lobj, lcls, ledge)).detach()
-        
-       
+
     def single_mask_loss(self, gt_mask, pred, proto, xyxy, area):
         """Calculates and normalizes single mask loss for YOLOv5 between predicted and ground truth masks."""
         pred_mask = (pred @ proto.view(self.nm, -1)).view(-1, *proto.shape[1:])  # (n,32) @ (32,80,80) -> (n,80,80)
