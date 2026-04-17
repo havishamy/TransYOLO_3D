@@ -25,9 +25,10 @@ import json
 import os
 import subprocess
 import sys
+from collections import defaultdict
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
-from collections import defaultdict
+
 import cv2
 import numpy as np
 import torch
@@ -63,7 +64,7 @@ from utils.general import (
     xyxy2xywh,
 )
 from utils.metrics import ConfusionMatrix, box_iou
-from utils.plots import output_to_target, plot_val_study, colors
+from utils.plots import colors, output_to_target, plot_val_study
 from utils.segment.dataloaders import create_dataloader
 from utils.segment.general import mask_iou, process_mask, process_mask_native, scale_image
 from utils.segment.metrics import Metrics, ap_per_class_box_and_mask
@@ -151,14 +152,13 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
             correct[matches[:, 1].astype(int), i] = True
     return torch.tensor(correct, dtype=torch.bool, device=iouv.device)
 
-def visualize_single_image(edge, im, pred, pred_masks, names, save_path,edge_path, conf_thres=0.25, alpha=0.4):
-    """
-    可视化单张图片的实例分割结果并保存
-    修复：处理预测格式不一致和无效类别索引
+
+def visualize_single_image(edge, im, pred, pred_masks, names, save_path, edge_path, conf_thres=0.25, alpha=0.4):
+    """可视化单张图片的实例分割结果并保存 修复：处理预测格式不一致和无效类别索引.
     """
     if isinstance(edge, torch.Tensor):
         edge = edge.cpu().numpy().astype(int)
-    edge*=255
+    edge *= 255
     edge = edge.transpose(1, 2, 0)
     # Build Image
     edge_path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,23 +166,23 @@ def visualize_single_image(edge, im, pred, pred_masks, names, save_path,edge_pat
     # 1. 图像预处理（保持不变）
     if isinstance(im, torch.Tensor):
         im = im.cpu().float().numpy()
-    
+
     if im.shape[0] == 3:
         im = im.transpose(1, 2, 0)
-    
+
     if im.max() <= 1.0:
         im = (im * 255).astype(np.uint8)
     else:
         im = im.astype(np.uint8)
-    
+
     im = cv2.cvtColor(im, cv2.COLOR_RGB2BGR)
     h, w = im.shape[:2]
-    
+
     if pred is None or len(pred) == 0:
         save_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(save_path), im)
         return
-    
+
     # 过滤低置信度
     mask = pred[:, 4] > conf_thres
     pred = pred[mask]
@@ -190,86 +190,82 @@ def visualize_single_image(edge, im, pred, pred_masks, names, save_path,edge_pat
         save_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(save_path), im)
         return
-    
+
     if isinstance(pred_masks, torch.Tensor):
         pred_masks = pred_masks[mask]
     else:
         m = mask.cpu().numpy() if isinstance(mask, torch.Tensor) else mask
         pred_masks = pred_masks[m]
-    
+
     vis_img = im.copy()
-    
+
     # 2. 遍历每个实例进行绘制
     for i, (p, mask_item) in enumerate(zip(pred, pred_masks)):
         # ===== 关键修复：安全解包预测值 =====
         p_list = p.tolist() if isinstance(p, torch.Tensor) else p
-        
+
         # 确保至少有6个元素 [x1, y1, x2, y2, conf, cls]
         if len(p_list) < 6:
             LOGGER.warning(f"Skipping invalid detection format in {save_path.name}: length={len(p_list)}")
             continue
-            
+
         # 提取值（防止额外维度如跟踪ID）
         x1, y1, x2, y2 = float(p_list[0]), float(p_list[1]), float(p_list[2]), float(p_list[3])
         conf = float(p_list[4])
         cls = int(p_list[5])
         # ==========================================
-        
+
         # 检查类别有效性
         if cls < 0 or cls >= len(names):
             LOGGER.debug(f"Skipping invalid class index {cls} in {save_path.name}")
             continue
-        
-        label = f'{names[cls]} {conf:.2f}'
-        
+
+        label = f"{names[cls]} {conf:.2f}"
+
         # 获取颜色
         color = colors(cls, True)
         color_bgr = (int(color[2]), int(color[1]), int(color[0]))
-        
+
         # 处理掩码
         if isinstance(mask_item, torch.Tensor):
             mask_np = mask_item.cpu().numpy()
         else:
             mask_np = np.array(mask_item)
-            
+
         if mask_np.shape != (h, w):
             mask_np = cv2.resize(mask_np.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
         mask_bin = (mask_np > 0.5).astype(np.uint8)
-        
+
         if mask_bin.sum() == 0:
             continue
-        
+
         # 绘制半透明掩码
         colored_mask = np.zeros_like(vis_img)
         colored_mask[mask_bin > 0] = color_bgr
         vis_img = cv2.addWeighted(vis_img, 1.0, colored_mask, alpha, 0)
-        
+
         # 绘制边界框（转换为整数坐标）
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(w, x2), min(h, y2)
         cv2.rectangle(vis_img, (x1, y1), (x2, y2), color_bgr, 2)
-        
+
         # 绘制标签
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.5
         thickness = 1
         (text_w, text_h), _ = cv2.getTextSize(label, font, font_scale, thickness)
-        
+
         label_y = max(y1 - 5, text_h + 5)
-        cv2.rectangle(vis_img, 
-                     (x1, label_y - text_h - 4), 
-                     (x1 + text_w + 8, label_y), 
-                     color_bgr, -1)
-        
-        cv2.putText(vis_img, label, (x1 + 4, label_y - 2), 
-                   font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
-        
+        cv2.rectangle(vis_img, (x1, label_y - text_h - 4), (x1 + text_w + 8, label_y), color_bgr, -1)
+
+        cv2.putText(vis_img, label, (x1 + 4, label_y - 2), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
         # 绘制掩码轮廓
         contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if contours:
             cv2.drawContours(vis_img, contours, -1, color_bgr, 1)
-    
+
     # 保存图像
     save_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(save_path), vis_img)
@@ -307,9 +303,9 @@ def run(
     mask_downsample_ratio=1,
     compute_loss=None,
     callbacks=Callbacks(),
-    save_vis=True,           # 新增：是否保存单张可视化
-    vis_conf=0.25,            # 新增：可视化置信度阈值
-    vis_alpha=0.4,            # 新增：掩码透明度
+    save_vis=True,  # 新增：是否保存单张可视化
+    vis_conf=0.25,  # 新增：可视化置信度阈值
+    vis_alpha=0.4,  # 新增：掩码透明度
 ):
     """Validate a YOLOv5 segmentation model on specified dataset, producing metrics, plots, and optional JSON output."""
     if save_json:
@@ -392,14 +388,14 @@ def run(
     if isinstance(names, (list, tuple)):  # old format
         names = dict(enumerate(names))
     class_map = coco80_to_coco91_class() if is_coco else list(range(1000))
-    
+
     # -------------------------- 新增：mIoU 统计初始化 --------------------------
     # 记录每个类别的 IoU 列表
     class_iou_dict = defaultdict(list)
     # 记录全局 IoU 列表（所有匹配实例）
     global_iou_list = []
     # -------------------------------------------------------------------------
-    
+
     s = ("%22s" + "%11s" * 12) % (  # 新增 mIoU 列
         "Class",
         "Images",
@@ -413,7 +409,7 @@ def run(
         "mAP50",
         "mAP50-95)",
         "IoU",  # 新增列：类别 IoU
-        "mIoU", # 新增列：全局 mIoU
+        "mIoU",  # 新增列：全局 mIoU
     )
     dt = Profile(device=device), Profile(device=device), Profile(device=device)
     metrics = Metrics()
@@ -421,13 +417,13 @@ def run(
     jdict, stats = [], []
     # -------------------------- 新增：大中小目标尺寸分类统计 --------------------------
     stats_s, stats_m, stats_l = [], [], []  # Small / Medium / Large AP 统计
-    AREA_THR_S = 32 ** 2   # 小目标上限: area < 1024 px²
-    AREA_THR_L = 96 ** 2   # 大目标下限: area ≥ 9216 px²
+    AREA_THR_S = 32**2  # 小目标上限: area < 1024 px²
+    AREA_THR_L = 96**2  # 大目标下限: area ≥ 9216 px²
     global_iou_list_s, global_iou_list_m, global_iou_list_l = [], [], []  # 分尺寸 mIoU
     # -------------------------------------------------------------------------
     # callbacks.run('on_val_start')
     pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)  # progress bar
-    for batch_i, (im, targets, paths, shapes, masks,edges) in enumerate(pbar):
+    for batch_i, (im, targets, paths, shapes, masks, edges) in enumerate(pbar):
         # callbacks.run('on_val_batch_start')
         with dt[0]:
             if cuda:
@@ -444,11 +440,11 @@ def run(
         # Inference
         with dt[1]:
             re = model(im) if compute_loss else model(im, augment=augment)
-            out, pre_edge=re
-            preds, protos, train_out  = out
+            out, pre_edge = re
+            preds, protos, train_out = out
         # Loss
         if compute_loss:
-            loss += compute_loss((train_out, protos, pre_edge),targets, masks,edges)[1]  # box, obj, cls
+            loss += compute_loss((train_out, protos, pre_edge), targets, masks, edges)[1]  # box, obj, cls
 
         # NMS
         targets[:, 2:] *= torch.tensor((width, height, width, height), device=device)  # to pixels
@@ -512,23 +508,33 @@ def run(
                 if not overlap:
                     _areas = (tbox[:, 2] - tbox[:, 0]) * (tbox[:, 3] - tbox[:, 1])
                     size_cats = torch.zeros(nl, dtype=torch.long, device=device)
-                    size_cats[_areas >= AREA_THR_S] = 1   # Medium
-                    size_cats[_areas >= AREA_THR_L] = 2   # Large
+                    size_cats[_areas >= AREA_THR_S] = 1  # Medium
+                    size_cats[_areas >= AREA_THR_L] = 2  # Large
                     for _cat_i, _sz_st in enumerate([stats_s, stats_m, stats_l]):
                         _sz_mask = size_cats == _cat_i
                         if _sz_mask.any():
                             _cb_sz = process_batch(predn, labelsn[_sz_mask], iouv)
                             _cm_sz = process_batch(
-                                predn, labelsn[_sz_mask], iouv,
-                                pred_masks, gt_masks[_sz_mask], overlap=False, masks=True
+                                predn,
+                                labelsn[_sz_mask],
+                                iouv,
+                                pred_masks,
+                                gt_masks[_sz_mask],
+                                overlap=False,
+                                masks=True,
                             )
                         else:
                             _cb_sz = torch.zeros(npr, niou, dtype=torch.bool, device=device)
                             _cm_sz = torch.zeros(npr, niou, dtype=torch.bool, device=device)
-                        _sz_st.append((
-                            _cm_sz, _cb_sz, pred[:, 4], pred[:, 5],
-                            labels[_sz_mask, 0] if _sz_mask.any() else torch.zeros(0, device=device)
-                        ))
+                        _sz_st.append(
+                            (
+                                _cm_sz,
+                                _cb_sz,
+                                pred[:, 4],
+                                pred[:, 5],
+                                labels[_sz_mask, 0] if _sz_mask.any() else torch.zeros(0, device=device),
+                            )
+                        )
                 else:
                     size_cats = None
                 # ---------------------------------------------------------------
@@ -542,22 +548,21 @@ def run(
                     gt_masks_resized = gt_masks_resized.gt_(0.5)
                 else:
                     gt_masks_resized = gt_masks.gt_(0.5)
-                
+
                 # 计算掩码 IoU 矩阵 (nl, npr)
                 iou_matrix = mask_iou(
-                    gt_masks_resized.view(gt_masks_resized.shape[0], -1),
-                    pred_masks.view(pred_masks.shape[0], -1)
+                    gt_masks_resized.view(gt_masks_resized.shape[0], -1), pred_masks.view(pred_masks.shape[0], -1)
                 )
-                
+
                 # 匹配真实掩码和预测掩码（同类别 + 最大 IoU）
                 correct_class = labels[:, 0:1] == pred[:, 5].unsqueeze(1).T  # (nl, npr)
                 iou_matrix = iou_matrix * correct_class  # 不同类别 IoU 置 0
-                
+
                 # 对每个真实掩码，找到最佳匹配的预测掩码
                 for gt_idx in range(nl):
                     gt_cls = int(labels[gt_idx, 0].item())
                     # 找到同类别中 IoU 最大的预测掩码
-                    max_iou, pred_idx = iou_matrix[gt_idx].max(dim=0)
+                    max_iou, _pred_idx = iou_matrix[gt_idx].max(dim=0)
                     if max_iou > 0:  # 存在有效匹配
                         class_iou_dict[gt_cls].append(max_iou.item())
                         global_iou_list.append(max_iou.item())
@@ -566,7 +571,7 @@ def run(
                             _sz = int(size_cats[gt_idx].item())
                             [global_iou_list_s, global_iou_list_m, global_iou_list_l][_sz].append(max_iou.item())
                 # -------------------------------------------------------------------------
-                
+
                 if plots:
                     confusion_matrix.process_batch(predn, labelsn)
             stats.append((correct_masks, correct_bboxes, pred[:, 4], pred[:, 5], labels[:, 0]))  # (conf, pcls, tcls)
@@ -585,13 +590,13 @@ def run(
                 visualize_single_image(
                     edge_vis,
                     img_tensor,
-                    pred,           # 原始预测 (包含所有检测)
-                    pred_masks,     # 对应掩码
+                    pred,  # 原始预测 (包含所有检测)
+                    pred_masks,  # 对应掩码
                     names,
                     vis_save_path,
                     vis_edge_path,
                     conf_thres=vis_conf,
-                    alpha=vis_alpha
+                    alpha=vis_alpha,
                 )
             # ============================================================
 
@@ -613,7 +618,16 @@ def run(
         if plots and batch_i < 3:
             if len(plot_masks):
                 plot_masks = torch.cat(plot_masks, dim=0)
-            plot_images_and_masks(im, targets, masks, edges, paths, save_dir / f"val_batch{batch_i}_labels.jpg",save_dir / f"val_batch{batch_i}_edge_labels.jpg", names)
+            plot_images_and_masks(
+                im,
+                targets,
+                masks,
+                edges,
+                paths,
+                save_dir / f"val_batch{batch_i}_labels.jpg",
+                save_dir / f"val_batch{batch_i}_edge_labels.jpg",
+                names,
+            )
             plot_images_and_masks(
                 im,
                 output_to_target(preds, max_det=15),
@@ -640,7 +654,7 @@ def run(
     for cls_id in range(nc):
         iou_list = class_iou_dict.get(cls_id, [])
         class_miou_dict[cls_id] = np.mean(iou_list) if iou_list else 0.0
-    
+
     # 计算全局 mIoU
     global_miou = np.mean(global_iou_list) if global_iou_list else 0.0
     # 分尺寸 mIoU
@@ -650,12 +664,12 @@ def run(
 
     # 计算大中小目标 AP 指标
     def _compute_size_metrics(sz_stats):
-        """计算单个尺寸类别的 AP 指标，失败时返回 None。"""
+        """计算单个尺寸类别的 AP 指标，失败时返回 None。."""
         if not sz_stats:
             return None
         try:
             sz_np = [torch.cat(x, 0).cpu().numpy() for x in zip(*sz_stats)]
-            if len(sz_np[4]) == 0:   # 无该尺寸目标
+            if len(sz_np[4]) == 0:  # 无该尺寸目标
                 return None
             sz_res = ap_per_class_box_and_mask(*sz_np, plot=False, save_dir=save_dir, names=names)
             sz_met = Metrics()
@@ -689,21 +703,23 @@ def run(
         shape = (batch_size, 3, imgsz, imgsz)
         LOGGER.info(f"Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {shape}" % t)
         # 打印 mIoU 汇总
-        LOGGER.info(f"\n==================== mIoU Metrics ====================")
+        LOGGER.info("\n==================== mIoU Metrics ====================")
         LOGGER.info(f"Global mIoU: {global_miou:.4f}")
         for cls_id in range(nc):
             cls_name = names.get(cls_id, f"class_{cls_id}")
             cls_iou = class_miou_dict[cls_id]
             LOGGER.info(f"{cls_name} IoU: {cls_iou:.4f}")
-        LOGGER.info(f"=======================================================")
+        LOGGER.info("=======================================================")
 
         # ---- 新增：大中小目标分割指标汇总 ----
-        LOGGER.info(f"\n====== 大中小目标分割指标 (COCO-style: S<32², 32²≤M<96², L≥96²) ======")
+        LOGGER.info("\n====== 大中小目标分割指标 (COCO-style: S<32², 32²≤M<96², L≥96²) ======")
         hdr = f"{'Size':<10} {'Box-P':>8} {'Box-R':>8} {'Box-mAP50':>10} {'Box-mAP50-95':>13} {'Mask-P':>8} {'Mask-R':>8} {'Mask-mAP50':>11} {'Mask-mAP50-95':>13} {'Mask-mIoU':>10}"
         LOGGER.info(hdr)
-        for _sl, _sm, _smiou in [('Small',  met_s, global_miou_s),
-                                  ('Medium', met_m, global_miou_m),
-                                  ('Large',  met_l, global_miou_l)]:
+        for _sl, _sm, _smiou in [
+            ("Small", met_s, global_miou_s),
+            ("Medium", met_m, global_miou_m),
+            ("Large", met_l, global_miou_l),
+        ]:
             if _sm is not None and len(_sm.metric_mask.all_ap):
                 _mr = _sm.mean_results()  # (mp_b, mr_b, map50_b, map_b, mp_m, mr_m, map50_m, map_m)
                 LOGGER.info(
@@ -715,7 +731,7 @@ def run(
                     f"{_sl:<10} {'N/A':>8} {'N/A':>8} {'N/A':>10} {'N/A':>13}"
                     f" {'N/A':>8} {'N/A':>8} {'N/A':>11} {'N/A':>13} {_smiou:>10.4f}"
                 )
-        LOGGER.info(f"=======================================================================")
+        LOGGER.info("=======================================================================")
         # -----------------------------------------------------------------------
     # Plots
     if plots:
@@ -756,7 +772,17 @@ def run(
     if not training:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ""
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
-    final_metric = mp_bbox, mr_bbox, map50_bbox, map_bbox, mp_mask, mr_mask, map50_mask, map_mask, global_miou  # 新增 global_miou
+    final_metric = (
+        mp_bbox,
+        mr_bbox,
+        map50_bbox,
+        map_bbox,
+        mp_mask,
+        mr_mask,
+        map50_mask,
+        map_mask,
+        global_miou,
+    )  # 新增 global_miou
     return (*final_metric, *(loss.cpu() / len(dataloader)).tolist()), metrics.get_maps(nc), t
 
 
@@ -765,8 +791,16 @@ def parse_opt():
     inference settings.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=str, default="/home/dsj/dataset/mydata/server/mydata.yaml", help="dataset.yaml path")
-    parser.add_argument("--weights", nargs="+", type=str, default="/home/dsj/code/yolov5_modify/runs_edge_p2_sim/train-seg/exp/weights/best.pt", help="model path(s)")
+    parser.add_argument(
+        "--data", type=str, default="/home/dsj/dataset/mydata/server/mydata.yaml", help="dataset.yaml path"
+    )
+    parser.add_argument(
+        "--weights",
+        nargs="+",
+        type=str,
+        default="/home/dsj/code/yolov5_modify/runs_edge_p2_sim/train-seg/exp/weights/best.pt",
+        help="model path(s)",
+    )
     parser.add_argument("--batch-size", type=int, default=32, help="batch size")
     parser.add_argument("--imgsz", "--img", "--img-size", type=int, default=640, help="inference size (pixels)")
     parser.add_argument("--conf-thres", type=float, default=0.001, help="confidence threshold")
@@ -782,16 +816,26 @@ def parse_opt():
     parser.add_argument("--save-hybrid", action="store_true", help="save label+prediction hybrid results to *.txt")
     parser.add_argument("--save-conf", action="store_true", help="save confidences in --save-txt labels")
     parser.add_argument("--save-json", action="store_true", help="save a COCO-JSON results file")
-    parser.add_argument("--project", default="/home/dsj/code/yolov5_modify/runs_edge_p2_sim/test-seg", help="save results to project/name")
+    parser.add_argument(
+        "--project",
+        default="/home/dsj/code/yolov5_modify/runs_edge_p2_sim/test-seg",
+        help="save results to project/name",
+    )
     parser.add_argument("--name", default="exp_claude_code", help="save to project/name")
     parser.add_argument("--exist-ok", action="store_true", help="existing project/name ok, do not increment")
     parser.add_argument("--half", action="store_true", help="use FP16 half-precision inference")
     parser.add_argument("--dnn", action="store_true", help="use OpenCV DNN for ONNX inference")
 
     # 新增可视化参数
-    parser.add_argument("--save-vis", default=True,action="store_true", help="save visualization for each image separately")
-    parser.add_argument("--vis-conf", type=float, default=0.25, help="confidence threshold for visualization (default: 0.25)")
-    parser.add_argument("--vis-alpha", type=float, default=0.4, help="mask transparency for visualization, 0-1 (default: 0.4)")
+    parser.add_argument(
+        "--save-vis", default=True, action="store_true", help="save visualization for each image separately"
+    )
+    parser.add_argument(
+        "--vis-conf", type=float, default=0.25, help="confidence threshold for visualization (default: 0.25)"
+    )
+    parser.add_argument(
+        "--vis-alpha", type=float, default=0.4, help="mask transparency for visualization, 0-1 (default: 0.4)"
+    )
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML

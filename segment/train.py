@@ -185,7 +185,7 @@ def train(hyp, opt, device, callbacks):
     else:
         model = SegmentationModel(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
     amp = check_amp(model)  # check AMP
-    #amp = True
+    # amp = True
 
     # Freeze
     freeze = [f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
@@ -320,7 +320,7 @@ def train(hyp, opt, device, callbacks):
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
     last_opt_step = -1
     maps = np.zeros(nc)  # mAP per class
-    results = (0, 0, 0, 0,0, 0, 0, 0, 0, 0, 0, 0, 0,0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
+    results = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = torch.cuda.amp.GradScaler(enabled=amp)
     stopper, stop = EarlyStopping(patience=opt.patience), False
@@ -352,12 +352,19 @@ def train(hyp, opt, device, callbacks):
         pbar = enumerate(train_loader)
         LOGGER.info(
             ("\n" + "%11s" * 9)
-            % ("Epoch", "GPU_mem", "box_loss", "seg_loss", "obj_loss", "cls_loss","edge_loss", "Instances", "Size")
+            % ("Epoch", "GPU_mem", "box_loss", "seg_loss", "obj_loss", "cls_loss", "edge_loss", "Instances", "Size")
         )
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
         optimizer.zero_grad()
-        for i, (imgs, targets, paths, _, masks,edges) in pbar:  # batch ------------------------------------------------------
+        for i, (
+            imgs,
+            targets,
+            paths,
+            _,
+            masks,
+            edges,
+        ) in pbar:  # batch ------------------------------------------------------
             # callbacks.run('on_train_batch_start')
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
@@ -383,8 +390,10 @@ def train(hyp, opt, device, callbacks):
 
             # Forward
             with torch.cuda.amp.autocast(amp):
-                pred,pre_edge = model(imgs)  # forward
-                loss, loss_items = compute_loss(pred,pre_edge, targets.to(device), masks=masks.to(device),edge=edges.to(device))
+                pred, pre_edge = model(imgs)  # forward
+                loss, loss_items = compute_loss(
+                    pred, pre_edge, targets.to(device), masks=masks.to(device), edge=edges.to(device)
+                )
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
@@ -419,12 +428,20 @@ def train(hyp, opt, device, callbacks):
                 # Mosaic plots
                 if plots:
                     if ni < 3:
-                        plot_images_and_masks(imgs, targets, masks,edges, paths, save_dir / f"train_batch{ni}.jpg", save_dir / f"train_edge{ni}.jpg")
+                        plot_images_and_masks(
+                            imgs,
+                            targets,
+                            masks,
+                            edges,
+                            paths,
+                            save_dir / f"train_batch{ni}.jpg",
+                            save_dir / f"train_edge{ni}.jpg",
+                        )
                     if ni == 10:
                         files = sorted(save_dir.glob("train*.jpg"))
                         logger.log_images(files, "Mosaics", epoch)
             # end batch ------------------------------------------------------------------------------------------------
-        '''
+        """
         plot_images_and_masks(
                 imgs,
                 targets,
@@ -435,8 +452,8 @@ def train(hyp, opt, device, callbacks):
                 save_dir / f"test_{epoch}_prededge.jpg",
                 names,
             )  # pred# Scheduler
-        '''
-        
+        """
+
         lr = [x["lr"] for x in optimizer.param_groups]  # for loggers
         scheduler.step()
 
@@ -560,8 +577,15 @@ def parse_opt(known=False):
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights", type=str, default="", help="initial weights path")
-    parser.add_argument("--cfg", type=str, default="/home/dsj/code/yolov5_modify/models/segment/yolov5s_edge_v3.yaml", help="model.yaml path")
-    parser.add_argument("--data", type=str, default="/home/dsj/dataset/mydata/server/dataset.yaml", help="dataset.yaml path")
+    parser.add_argument(
+        "--cfg",
+        type=str,
+        default="/home/dsj/code/yolov5_modify/models/segment/yolov5s_edge_v3.yaml",
+        help="model.yaml path",
+    )
+    parser.add_argument(
+        "--data", type=str, default="/home/dsj/dataset/mydata/server/dataset.yaml", help="dataset.yaml path"
+    )
     parser.add_argument("--hyp", type=str, default=ROOT / "data/hyps/hyp.scratch-low.yaml", help="hyperparameters path")
     parser.add_argument("--epochs", type=int, default=400, help="total training epochs")
     parser.add_argument("--batch-size", type=int, default=16, help="total batch size for all GPUs, -1 for autobatch")
@@ -572,7 +596,7 @@ def parse_opt(known=False):
     parser.add_argument("--noval", action="store_true", help="only validate final epoch")
     parser.add_argument("--noautoanchor", action="store_true", help="disable AutoAnchor")
     parser.add_argument("--noplots", action="store_true", help="save no plot files")
-    parser.add_argument("--evolve", type=int, nargs="?", const=300,help="evolve hyperparameters for x generations")
+    parser.add_argument("--evolve", type=int, nargs="?", const=300, help="evolve hyperparameters for x generations")
     parser.add_argument("--bucket", type=str, default="", help="gsutil bucket")
     parser.add_argument("--cache", type=str, nargs="?", const="ram", help="image --cache ram/disk")
     parser.add_argument("--image-weights", action="store_true", help="use weighted image selection for training")
@@ -582,7 +606,9 @@ def parse_opt(known=False):
     parser.add_argument("--optimizer", type=str, choices=["SGD", "Adam", "AdamW"], default="SGD", help="optimizer")
     parser.add_argument("--sync-bn", action="store_true", help="use SyncBatchNorm, only available in DDP mode")
     parser.add_argument("--workers", type=int, default=8, help="max dataloader workers (per RANK in DDP mode)")
-    parser.add_argument("--project", default="/home/dsj/code/yolov5_modify/runs_edge/train-seg", help="save to project/name")
+    parser.add_argument(
+        "--project", default="/home/dsj/code/yolov5_modify/runs_edge/train-seg", help="save to project/name"
+    )
     parser.add_argument("--name", default="exp_3p", help="save to project/name")
     parser.add_argument("--exist-ok", action="store_true", help="existing project/name ok, do not increment")
     parser.add_argument("--quad", action="store_true", help="quad dataloader")
@@ -662,7 +688,7 @@ def main(opt, callbacks=Callbacks()):
         meta = {
             "lr0": (1, 1e-3, 1e-1),  # initial learning rate (SGD=1E-2, Adam=1E-3)
             "lrf": (1, 0.001, 10.1),  # final OneCycleLR learning rate (lr0 * lrf)
-            "edge":(1,0.5,4.0),
+            "edge": (1, 0.5, 4.0),
         }  # segment copy-paste (probability)
 
         with open(opt.hyp, errors="ignore") as f:
@@ -703,7 +729,7 @@ def main(opt, callbacks=Callbacks()):
                 mp, s = 0.8, 0.2  # mutation probability, sigma
                 npr = np.random
                 npr.seed(int(time.time()))
-                
+
                 # 核心修复：只保留hyp中存在且meta中也存在的键，避免KeyError
                 valid_keys = [k for k in hyp.keys() if k in meta]
                 # 只对有效键计算g值
@@ -712,7 +738,7 @@ def main(opt, callbacks=Callbacks()):
                 v = np.ones(ng)
                 while all(v == 1):  # mutate until a change occurs (prevent duplicates)
                     v = (g * (npr.random(ng) < mp) * npr.randn(ng) * npr.random() * s + 1).clip(0.3, 3.0)
-                
+
                 # 只对有效键进行变异，避免修改不在meta中的参数
                 for i, k in enumerate(valid_keys):  # plt.hist(v.ravel(), 300)
                     # 确保x的索引不越界（x[i + 12]对应超参列）
@@ -757,6 +783,6 @@ if __name__ == "__main__":
     opt = parse_opt()
     main(opt)
 
-'''
+"""
 /home/dsj/data1/dataset/LabPics_Chemistry_yolo_seg/images/test/73Eval.jpg
-'''
+"""
