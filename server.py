@@ -1,11 +1,12 @@
+import json
 import socket
+
 import cv2
 import numpy as np
-import json
 import torch
 
 from models.common import DetectMultiBackend
-from utils.general import non_max_suppression, scale_boxes, check_img_size
+from utils.general import check_img_size, non_max_suppression, scale_boxes
 from utils.segment.general import process_mask, scale_image
 from utils.torch_utils import select_device
 
@@ -16,11 +17,10 @@ class Config:
     IOU_THRESH = 0.4
     IMG_SIZE = 640
     DEVICE = "0" if torch.cuda.is_available() else "cpu"
-    #DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    # DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 class YOLOTCParser:
-
     def __init__(self, listen_ip, listen_port, config):
 
         self.listen_ip = listen_ip
@@ -35,10 +35,7 @@ class YOLOTCParser:
 
         self.device = select_device(self.config.DEVICE)
 
-        self.model = DetectMultiBackend(
-            self.config.MODEL_PATH,
-            device=self.device
-        )
+        self.model = DetectMultiBackend(self.config.MODEL_PATH, device=self.device)
 
         self.stride = self.model.stride
         self.names = self.model.names
@@ -58,14 +55,11 @@ class YOLOTCParser:
         if not img_len_bytes:
             return None
 
-        img_len = int.from_bytes(img_len_bytes, byteorder='big')
+        img_len = int.from_bytes(img_len_bytes, byteorder="big")
 
         img_bytes = b""
         while len(img_bytes) < img_len:
-
-            chunk = client_socket.recv(
-                min(4096, img_len - len(img_bytes))
-            )
+            chunk = client_socket.recv(min(4096, img_len - len(img_bytes)))
 
             if not chunk:
                 return None
@@ -86,13 +80,11 @@ class YOLOTCParser:
 
         result_json = json.dumps(result, ensure_ascii=False)
 
-        result_bytes = result_json.encode('utf-8')
+        result_bytes = result_json.encode("utf-8")
 
         result_len = len(result_bytes)
 
-        client_socket.sendall(
-            result_len.to_bytes(4, byteorder='big')
-        )
+        client_socket.sendall(result_len.to_bytes(4, byteorder="big"))
 
         client_socket.sendall(result_bytes)
 
@@ -126,7 +118,7 @@ class YOLOTCParser:
 
         img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        #img = cv2.resize(img, (self.imgsz, self.imgsz))
+        # img = cv2.resize(img, (self.imgsz, self.imgsz))
 
         img = img.transpose(2, 0, 1)
 
@@ -139,18 +131,11 @@ class YOLOTCParser:
         img = img.unsqueeze(0)
 
         with torch.no_grad():
+            out, _pre_edge = self.model(img)
 
-            out, pre_edge = self.model(img)
+            preds, protos, _train_out = out
 
-            preds, protos, train_out = out
-
-        preds = non_max_suppression(
-            preds,
-            self.config.CONF_THRESH,
-            self.config.IOU_THRESH,
-            max_det=100,
-            nm=32
-        )
+        preds = non_max_suppression(preds, self.config.CONF_THRESH, self.config.IOU_THRESH, max_det=100, nm=32)
 
         pred = preds[0]
 
@@ -159,33 +144,19 @@ class YOLOTCParser:
 
         proto = protos[0]
 
-        pred_masks = process_mask(
-            proto,
-            pred[:, 6:],
-            pred[:, :4],
-            img.shape[2:]
-        )
+        pred_masks = process_mask(proto, pred[:, 6:], pred[:, :4], img.shape[2:])
 
-        pred_masks = scale_image(
-            img.shape[2:],
-            pred_masks.permute(1, 2, 0).cpu().numpy(),
-            img0.shape[:2]
-        )
+        pred_masks = scale_image(img.shape[2:], pred_masks.permute(1, 2, 0).cpu().numpy(), img0.shape[:2])
 
         pred_masks = torch.from_numpy(pred_masks).permute(2, 0, 1)
 
         predn = pred.clone()
 
-        scale_boxes(
-            img.shape[2:],
-            predn[:, :4],
-            img0.shape
-        ).round()
+        scale_boxes(img.shape[2:], predn[:, :4], img0.shape).round()
 
         detections = []
 
         for i in range(len(predn)):
-
             cls_id = int(predn[i, 5])
 
             cls_name = self.names[cls_id]
@@ -203,15 +174,7 @@ class YOLOTCParser:
 
             mask_data = mask_bin.tolist()
 
-            detections.append({
-
-                "box": bbox,
-                "cls_id": cls_id,
-                "cls_name": cls_name,
-                "conf": conf,
-                "mask": mask_data
-
-            })
+            detections.append({"box": bbox, "cls_id": cls_id, "cls_name": cls_name, "conf": conf, "mask": mask_data})
 
         return detections
 
@@ -222,15 +185,12 @@ class YOLOTCParser:
     def run(self):
 
         while True:
-
             client_socket, client_addr = self.server_socket.accept()
 
             print(f"客户端连接: {client_addr}")
 
             try:
-
                 while True:
-
                     image = self.receive_image(client_socket)
 
                     if image is None:
@@ -239,42 +199,24 @@ class YOLOTCParser:
 
                     detections = self.inference(image)
 
-                    response = {
-
-                        "success": True,
-                        "detections": detections
-
-                    }
+                    response = {"success": True, "detections": detections}
 
                     self.send_result(client_socket, response)
 
             except Exception as e:
-
                 print("错误:", e)
 
-                error_result = {
-
-                    "success": False,
-                    "detections": [],
-                    "error": str(e)
-
-                }
+                error_result = {"success": False, "detections": [], "error": str(e)}
 
                 self.send_result(client_socket, error_result)
 
             finally:
-
                 client_socket.close()
 
 
 if __name__ == "__main__":
-
     config = Config()
 
-    server = YOLOTCParser(
-        listen_ip="0.0.0.0",
-        listen_port=8866,
-        config=config
-    )
+    server = YOLOTCParser(listen_ip="0.0.0.0", listen_port=8866, config=config)
 
     server.run()
