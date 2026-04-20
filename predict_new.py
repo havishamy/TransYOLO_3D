@@ -1,5 +1,4 @@
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -20,25 +19,27 @@ from utils.general import (
     non_max_suppression,
     scale_boxes,
 )
+from utils.plots import colors
 from utils.segment.general import process_mask
 from utils.torch_utils import select_device
-from utils.plots import colors
+
 
 def mask_to_bbox(mask):
 
-        mask = mask.astype(np.uint8)
+    mask = mask.astype(np.uint8)
 
-        ys, xs = np.where(mask > 0)
+    ys, xs = np.where(mask > 0)
 
-        if len(xs) == 0 or len(ys) == 0:
-            return None
+    if len(xs) == 0 or len(ys) == 0:
+        return None
 
-        x1 = int(xs.min())
-        x2 = int(xs.max())
-        y1 = int(ys.min())
-        y2 = int(ys.max())
+    x1 = int(xs.min())
+    x2 = int(xs.max())
+    y1 = int(ys.min())
+    y2 = int(ys.max())
 
-        return [x1, y1, x2, y2]
+    return [x1, y1, x2, y2]
+
 
 def visualize_single_image(edge, im, pred, pred_masks, names, save_path, edge_path, conf_thres=0.25, alpha=0.4):
 
@@ -65,7 +66,6 @@ def visualize_single_image(edge, im, pred, pred_masks, names, save_path, edge_pa
     vis_img = im.copy()
 
     for i, (p, mask_item) in enumerate(zip(pred, pred_masks)):
-
         if p[4] < conf_thres:
             continue
 
@@ -73,7 +73,7 @@ def visualize_single_image(edge, im, pred, pred_masks, names, save_path, edge_pa
 
         cls = int(cls)
 
-        label = f'{names[cls]} {conf:.2f}'
+        label = f"{names[cls]} {conf:.2f}"
 
         color = colors(cls, True)
         color = (int(color[2]), int(color[1]), int(color[0]))
@@ -84,7 +84,7 @@ def visualize_single_image(edge, im, pred, pred_masks, names, save_path, edge_pa
             mask_np = cv2.resize(mask_np, (w, h))
 
         mask_bin = mask_np > 0.5
-        x1, y1, x2, y2=mask_to_bbox(mask_bin)
+        x1, y1, x2, y2 = mask_to_bbox(mask_bin)
 
         colored_mask = np.zeros_like(vis_img)
         colored_mask[mask_bin] = color
@@ -95,8 +95,7 @@ def visualize_single_image(edge, im, pred, pred_masks, names, save_path, edge_pa
 
         cv2.rectangle(vis_img, (x1, y1), (x2, y2), color, 2)
 
-        cv2.putText(vis_img, label, (x1, y1 - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        cv2.putText(vis_img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(save_path), vis_img)
@@ -106,22 +105,13 @@ def load_images(source):
 
     imgs = []
 
-    for ext in ['*.jpg', '*.png', '*.jpeg', '*.bmp']:
-
+    for ext in ["*.jpg", "*.png", "*.jpeg", "*.bmp"]:
         imgs.extend(list(Path(source).glob(ext)))
 
     return imgs
 
 
-def run(
-        weights,
-        source,
-        save_dir,
-        imgsz=640,
-        conf_thres=0.25,
-        iou_thres=0.5,
-        device='0'
-):
+def run(weights, source, save_dir, imgsz=640, conf_thres=0.25, iou_thres=0.5, device="0"):
 
     device = select_device(device)
 
@@ -139,7 +129,6 @@ def run(
     print("Total images:", len(image_paths))
 
     for img_path in tqdm(image_paths):
-
         img0 = cv2.imread(str(img_path))
 
         img = cv2.cvtColor(img0, cv2.COLOR_BGR2RGB)
@@ -157,10 +146,9 @@ def run(
         img = img.unsqueeze(0)
 
         with torch.no_grad():
-
             out, pre_edge = model(img)
 
-            preds, protos, train_out = out
+            preds, protos, _train_out = out
 
         preds = non_max_suppression(preds, conf_thres, iou_thres, max_det=300, nm=32)
 
@@ -180,29 +168,21 @@ def run(
         save_path = Path(save_dir) / "visualization" / img_path.name
         edge_path = Path(save_dir) / "edge" / img_path.name
 
-        visualize_single_image(
-            pre_edge[0],
-            img0,
-            predn,
-            pred_masks,
-            names,
-            save_path,
-            edge_path
-        )
+        visualize_single_image(pre_edge[0], img0, predn, pred_masks, names, save_path, edge_path)
 
 
 def parse_opt():
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--weights', type=str, required=True)
-    parser.add_argument('--source', type=str, required=True)
-    parser.add_argument('--save-dir', type=str, default='predict_results')
+    parser.add_argument("--weights", type=str, required=True)
+    parser.add_argument("--source", type=str, required=True)
+    parser.add_argument("--save-dir", type=str, default="predict_results")
 
-    parser.add_argument('--imgsz', type=int, default=640)
-    parser.add_argument('--conf-thres', type=float, default=0.25)
-    parser.add_argument('--iou-thres', type=float, default=0.5)
-    parser.add_argument('--device', default='0')
+    parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument("--conf-thres", type=float, default=0.25)
+    parser.add_argument("--iou-thres", type=float, default=0.5)
+    parser.add_argument("--device", default="0")
 
     return parser.parse_args()
 
