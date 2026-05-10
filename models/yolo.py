@@ -14,11 +14,12 @@ import platform
 import sys
 from copy import deepcopy
 from pathlib import Path
+
 import cv2
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[1]  # YOLOv5 root directory
@@ -70,31 +71,32 @@ try:
 except ImportError:
     thop = None
 
-def visualize_attention_maps(attns, batch_idx=0, img_name="test", 
-                              save_dir=Path("/home/dsj/attention_maps"), 
-                              resize_to=None, normalize=True):
-    """
-    可视化attns字典中的p2/p3/p4/p5注意力张量
+
+def visualize_attention_maps(
+    attns, batch_idx=0, img_name="test", save_dir=Path("/home/dsj/attention_maps"), resize_to=None, normalize=True
+):
+    """可视化attns字典中的p2/p3/p4/p5注意力张量.
+
     Args:
         attns: 模型forward输出的attns字典，{'p2':(B,att_ch,H,W), 'p3':..., 'p4':..., 'p5':...}
         batch_idx: 批量中要可视化的图片索引（B维度），默认第0张
         img_name: 原始图片名（用于命名保存的注意力图），默认test
         save_dir: 注意力图固定保存路径，默认和你边缘图同目录的attention_maps
         resize_to: 可选，将所有尺度注意力图上采样到该尺寸（如self.out_size），方便对比
-        normalize: 是否将注意力值归一化到[0,255]，必须为True（否则无法可视化）
+        normalize: 是否将注意力值归一化到[0,255]，必须为True（否则无法可视化）.
     """
     # 确保保存路径存在
     save_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # 遍历每个尺度的注意力张量
     for scale, att_feat in attns.items():
         # 提取单个样本的注意力特征：(att_ch, H, W)
         att_single = att_feat[batch_idx].detach().cpu()  # 去掉梯度，转到CPU
-        B, C, H, W = att_feat.shape
-        
+        _B, _C, _H, _W = att_feat.shape
+
         # 核心：多通道聚合为单通道注意力热力图（GAP）：(att_ch, H, W) → (1, H, W)
         att_heatmap = torch.mean(att_single, dim=0, keepdim=True)  # 通道维度求平均
-        
+
         # 归一化到[0,1]，再转到[0,255]的uint8格式
         if normalize:
             att_min = att_heatmap.min()
@@ -105,41 +107,44 @@ def visualize_attention_maps(attns, batch_idx=0, img_name="test",
             else:
                 att_heatmap = (att_heatmap - att_min) / (att_max - att_min)
         att_heatmap = (att_heatmap * 255).type(torch.uint8).numpy()  # (1, H, W) → np.array
-        
+
         # 去掉单通道维度，转为OpenCV支持的(H, W)
         att_heatmap = np.squeeze(att_heatmap, axis=0)
-        
+
         # 可选：上采样到指定尺寸（如原始图像尺寸self.out_size）
         if resize_to is not None:
-            att_heatmap = cv2.resize(att_heatmap, dsize=(resize_to[1], resize_to[0]), 
-                                     interpolation=cv2.INTER_LINEAR)
-        
+            att_heatmap = cv2.resize(att_heatmap, dsize=(resize_to[1], resize_to[0]), interpolation=cv2.INTER_LINEAR)
+
         # 转为3通道灰度图（方便OpenCV保存，和你边缘图格式一致）
         att_heatmap_3ch = cv2.cvtColor(att_heatmap, cv2.COLOR_GRAY2BGR)
-        
+
         # 生成保存路径：固定路径/尺度_原始名.jpg（如p2_test.jpg）
         save_path = save_dir / f"{scale}_{img_name}.jpg"
         # 保存注意力图
         cv2.imwrite(str(save_path), att_heatmap_3ch)
         print(f"已保存{scale}尺度注意力图：{save_path}")
 
+
 class SepConv(nn.Module):
-    """Depthwise separable conv: DW -> PW, with BN + ReLU"""
+    """Depthwise separable conv: DW -> PW, with BN + ReLU."""
+
     def __init__(self, in_ch, out_ch, k=3, stride=1, padding=1):
         super().__init__()
-        self.dw = nn.Conv2d(in_ch, in_ch, kernel_size=k, stride=stride,
-                            padding=padding, groups=in_ch, bias=False)
+        self.dw = nn.Conv2d(in_ch, in_ch, kernel_size=k, stride=stride, padding=padding, groups=in_ch, bias=False)
         self.pw = nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False)
         self.bn = nn.BatchNorm2d(out_ch)
         self.act = nn.ReLU(inplace=True)
+
     def forward(self, x):
         x = self.dw(x)
         x = self.pw(x)
         x = self.bn(x)
         return self.act(x)
 
+
 class ASPPLite(nn.Module):
-    """A lightweight ASPP-like context module (dilations small)"""
+    """A lightweight ASPP-like context module (dilations small)."""
+
     def __init__(self, in_ch, out_ch):
         super().__init__()
         self.conv_1 = nn.Conv2d(in_ch, out_ch, 1, bias=False)
@@ -152,49 +157,60 @@ class ASPPLite(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(out_ch * 4, out_ch, 1, bias=False),
             nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
         )
+
     def forward(self, x):
         x1 = self.conv_1(x)
         x2 = self.conv_3(x)
         x3 = self.conv_5(x)
         x4 = self.pool(x)
         x4 = self.pool_conv(x4)
-        x4 = F.interpolate(x4, size=x.shape[2:], mode='bilinear', align_corners=False)
+        x4 = F.interpolate(x4, size=x.shape[2:], mode="bilinear", align_corners=False)
         out = torch.cat([x1, x2, x3, x4], dim=1)
         return self.project(out)
 
+
 class edge_(nn.Module):
-    """
-    Lightweight edge/boundary module producing:
-      - per-class edge map at original resolution (B, nc, H, W)
-      - scale attentions for P3/P4/P5 (dict of tensors)
+    """Lightweight edge/boundary module producing: - per-class edge map at original resolution (B, nc, H, W) - scale
+    attentions for P3/P4/P5 (dict of tensors).
+
     Args:
         in_chs: tuple/list of input channels for (P3, P4, P5) respectively (e.g. (256,512,1024))
         mid_ch: base intermediate channel (controls param count), e.g. 64
         nc: number of classes (21)
         out_size: final full image size (H, W) e.g. (640,640)
+
     Returns:
         edge_map: (B, nc, H, W)
-        attns: dict {'p3': Tensor(B, mid_att_ch, H3, W3), 'p4':..., 'p5':...}
-               these attns are feature maps to be fused in neck (you can multiply or concat)
+        attns: dict {'p3': Tensor(B, mid_att_ch, H3, W3), 'p4':..., 'p5':...} these attns are feature maps to be fused
+            in neck (you can multiply or concat).
     """
-    def __init__(self, in_chs=(128,256,512,1024), mid_ch=64, nc=21, out_size=(160,160)):
+
+    def __init__(self, in_chs=(128, 256, 512, 1024), mid_ch=64, nc=21, out_size=(160, 160)):
         super().__init__()
         assert len(in_chs) == 4, "in_chs must be (P3,P4,P5)"
 
-        p2_ch,p3_ch, p4_ch, p5_ch = in_chs
+        p2_ch, p3_ch, p4_ch, p5_ch = in_chs
         self.nc = nc
         self.out_size = out_size
 
         # 1x1 reduction to a common channel (lightweight)
-        self.reduce_p2 = nn.Sequential(nn.Conv2d(p2_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True))
-        self.reduce_p3 = nn.Sequential(nn.Conv2d(p3_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True))
-        self.reduce_p4 = nn.Sequential(nn.Conv2d(p4_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True))
-        self.reduce_p5 = nn.Sequential(nn.Conv2d(p5_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True))
+        self.reduce_p2 = nn.Sequential(
+            nn.Conv2d(p2_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True)
+        )
+        self.reduce_p3 = nn.Sequential(
+            nn.Conv2d(p3_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True)
+        )
+        self.reduce_p4 = nn.Sequential(
+            nn.Conv2d(p4_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True)
+        )
+        self.reduce_p5 = nn.Sequential(
+            nn.Conv2d(p5_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True)
+        )
 
         # Upsample p5->p3 resolution, p4->p3 resolution and fuse at p3 scale
-        self.aspp = ASPPLite(mid_ch * 4, mid_ch * 2)   # context on fused features
+        self.aspp = ASPPLite(mid_ch * 4, mid_ch * 2)  # context on fused features
 
         # refinement convs (lightweight separable convs)
         self.refine = nn.Sequential(
@@ -208,9 +224,15 @@ class edge_(nn.Module):
         # generate per-scale attention features for neck fusion (1-channel attention per class might be heavy;
         # we produce a compact feature map (mid_ch) for each scale that the BAM can consume)
         att_ch = max(16, mid_ch // 2)
-        self.att_p3 = nn.Sequential(nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True))
-        self.att_p4 = nn.Sequential(nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True))
-        self.att_p5 = nn.Sequential(nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True))
+        self.att_p3 = nn.Sequential(
+            nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True)
+        )
+        self.att_p4 = nn.Sequential(
+            nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True)
+        )
+        self.att_p5 = nn.Sequential(
+            nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True)
+        )
 
         # small heads to align attention maps to incoming neck channel if you need (optional)
         # self.att_align_p3 = nn.Conv2d(att_ch, p3_ch, 1)  # uncomment if BAM expects same channels
@@ -224,90 +246,100 @@ class edge_(nn.Module):
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
             if isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
 
     def forward(self, feats):
-        """
-        feats: tuple/list of (p3_feat, p4_feat, p5_feat)
-               where p3 has highest resolution (e.g. 1/8), p5 lowest (1/32)
+        """feats: tuple/list of (p3_feat, p4_feat, p5_feat) where p3 has highest resolution (e.g. 1/8), p5 lowest
+        (1/32).
+
         Returns:
-           edge_map_full: (B, nc, H, W) where H,W == self.out_size
-           attns: dict of scale features {'p3':..., 'p4':..., 'p5':...}
+            edge_map_full: (B, nc, H, W) where H,W == self.out_size
+            attns: dict of scale features {'p3':..., 'p4':..., 'p5':...}.
         """
         p2, p3, p4, p5 = feats  # expect tensors
 
         # reduce channels to common mid_ch
-        r2 = self.reduce_p2(p2)   # B x mid x H1 x W1
-        r3 = self.reduce_p3(p3)   # B x mid x H3 x W3
-        r4 = self.reduce_p4(p4)   # B x mid x H4 x W4
-        r5 = self.reduce_p5(p5)   # B x mid x H5 x W5
+        r2 = self.reduce_p2(p2)  # B x mid x H1 x W1
+        r3 = self.reduce_p3(p3)  # B x mid x H3 x W3
+        r4 = self.reduce_p4(p4)  # B x mid x H4 x W4
+        r5 = self.reduce_p5(p5)  # B x mid x H5 x W5
 
         # upsample r4 and r5 to r3 size
         size2 = r2.shape[2:]
         size3 = r3.shape[2:]
-        r3_up = F.interpolate(r3, size=size2, mode='bilinear', align_corners=False)
-        r4_up = F.interpolate(r4, size=size2, mode='bilinear', align_corners=False)
-        r5_up = F.interpolate(r5, size=size2, mode='bilinear', align_corners=False)
+        r3_up = F.interpolate(r3, size=size2, mode="bilinear", align_corners=False)
+        r4_up = F.interpolate(r4, size=size2, mode="bilinear", align_corners=False)
+        r5_up = F.interpolate(r5, size=size2, mode="bilinear", align_corners=False)
 
         # fuse at p3 resolution
-        fused = torch.cat([r2,r3_up, r4_up, r5_up], dim=1)  # B x (mid*3) x H3 x W3
+        fused = torch.cat([r2, r3_up, r4_up, r5_up], dim=1)  # B x (mid*3) x H3 x W3
         fused = self.drop(fused)
-        ctx = self.aspp(fused)        # B x (mid*2) x H3 x W3
-        feat = self.refine(ctx)       # B x mid x H3 x W3
+        ctx = self.aspp(fused)  # B x (mid*2) x H3 x W3
+        feat = self.refine(ctx)  # B x mid x H3 x W3
 
         # per-class edge prediction at p3 resolution, then upsample to full image
-        edge_p2 = self.edge_pred(feat)   # B x nc x H3 x W3
-        edge_full = F.interpolate(edge_p2, size=self.out_size, mode='bilinear', align_corners=False)
-        edge_map_full = torch.sigmoid(edge_full)   # confidence per class boundary
+        edge_p2 = self.edge_pred(feat)  # B x nc x H3 x W3
+        edge_full = F.interpolate(edge_p2, size=self.out_size, mode="bilinear", align_corners=False)
+        edge_map_full = torch.sigmoid(edge_full)  # confidence per class boundary
 
         # produce per-scale attention features (for BAM/neck)
-        feat = F.interpolate(feat, size=size3, mode='bilinear', align_corners=False)
+        feat = F.interpolate(feat, size=size3, mode="bilinear", align_corners=False)
         att_p3 = self.att_p3(feat)  # B x att_ch x H3 x W3
         # downsample feature to p4 and p5 resolution for attention generation
         # compute att on r4/r5 aligned features:
-        att_p4 = self.att_p4(r4)    # B x att_ch x H4 x W4
-        att_p5 = self.att_p5(r5)    # B x att_ch x H5 x W5
+        att_p4 = self.att_p4(r4)  # B x att_ch x H4 x W4
+        att_p5 = self.att_p5(r5)  # B x att_ch x H5 x W5
 
         # Optionally normalize attentions to [0,1] if used multiplicatively:
         # att_p3 = torch.sigmoid(att_p3); att_p4 = torch.sigmoid(att_p4); att_p5 = torch.sigmoid(att_p5)
 
-        attns = {'p3': att_p3, 'p4': att_p4, 'p5': att_p5}
+        attns = {"p3": att_p3, "p4": att_p4, "p5": att_p5}
         return edge_map_full, attns
 
+
 class edge(nn.Module):
-    """
-    Lightweight edge/boundary module producing:
-      - per-class edge map at original resolution (B, nc, H, W)
-      - scale attentions for P3/P4/P5 (dict of tensors)
+    """Lightweight edge/boundary module producing: - per-class edge map at original resolution (B, nc, H, W) - scale
+    attentions for P3/P4/P5 (dict of tensors).
+
     Args:
         in_chs: tuple/list of input channels for (P3, P4, P5) respectively (e.g. (256,512,1024))
         mid_ch: base intermediate channel (controls param count), e.g. 64
         nc: number of classes (21)
         out_size: final full image size (H, W) e.g. (640,640)
+
     Returns:
         edge_map: (B, nc, H, W)
-        attns: dict {'p3': Tensor(B, mid_att_ch, H3, W3), 'p4':..., 'p5':...}
-               these attns are feature maps to be fused in neck (you can multiply or concat)
+        attns: dict {'p3': Tensor(B, mid_att_ch, H3, W3), 'p4':..., 'p5':...} these attns are feature maps to be fused
+            in neck (you can multiply or concat).
     """
-    def __init__(self, in_chs=(128,256,512,1024), mid_ch=64, nc=21, out_size=(160,160)):
+
+    def __init__(self, in_chs=(128, 256, 512, 1024), mid_ch=64, nc=21, out_size=(160, 160)):
         super().__init__()
         assert len(in_chs) == 4, "in_chs must be (P3,P4,P5)"
 
-        p2_ch,p3_ch, p4_ch, p5_ch = in_chs
+        p2_ch, p3_ch, p4_ch, p5_ch = in_chs
         self.nc = nc
         self.out_size = out_size
 
         # 1x1 reduction to a common channel (lightweight)
-        self.reduce_p2 = nn.Sequential(nn.Conv2d(p2_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True))
-        self.reduce_p3 = nn.Sequential(nn.Conv2d(p3_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True))
-        self.reduce_p4 = nn.Sequential(nn.Conv2d(p4_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True))
-        self.reduce_p5 = nn.Sequential(nn.Conv2d(p5_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True))
+        self.reduce_p2 = nn.Sequential(
+            nn.Conv2d(p2_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True)
+        )
+        self.reduce_p3 = nn.Sequential(
+            nn.Conv2d(p3_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True)
+        )
+        self.reduce_p4 = nn.Sequential(
+            nn.Conv2d(p4_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True)
+        )
+        self.reduce_p5 = nn.Sequential(
+            nn.Conv2d(p5_ch, mid_ch, 1, bias=False), nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True)
+        )
 
         # Upsample p5->p3 resolution, p4->p3 resolution and fuse at p3 scale
-        self.aspp = ASPPLite(mid_ch * 4, mid_ch * 2)   # context on fused features
+        self.aspp = ASPPLite(mid_ch * 4, mid_ch * 2)  # context on fused features
 
         # refinement convs (lightweight separable convs)
         self.refine = nn.Sequential(
@@ -321,10 +353,18 @@ class edge(nn.Module):
         # generate per-scale attention features for neck fusion (1-channel attention per class might be heavy;
         # we produce a compact feature map (mid_ch) for each scale that the BAM can consume)
         att_ch = max(16, mid_ch // 2)
-        self.att_p2 = nn.Sequential(nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True))
-        self.att_p3 = nn.Sequential(nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True))
-        self.att_p4 = nn.Sequential(nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True))
-        self.att_p5 = nn.Sequential(nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True))
+        self.att_p2 = nn.Sequential(
+            nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True)
+        )
+        self.att_p3 = nn.Sequential(
+            nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True)
+        )
+        self.att_p4 = nn.Sequential(
+            nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True)
+        )
+        self.att_p5 = nn.Sequential(
+            nn.Conv2d(mid_ch, att_ch, 1, bias=False), nn.BatchNorm2d(att_ch), nn.ReLU(inplace=True)
+        )
 
         # small heads to align attention maps to incoming neck channel if you need (optional)
         # self.att_align_p3 = nn.Conv2d(att_ch, p3_ch, 1)  # uncomment if BAM expects same channels
@@ -338,57 +378,57 @@ class edge(nn.Module):
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
             if isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
 
-    def forward(self, feats,img_name="test", vis_batch_idx=0, vis_attention=True):
-        """
-        feats: tuple/list of (p3_feat, p4_feat, p5_feat)
-               where p3 has highest resolution (e.g. 1/8), p5 lowest (1/32)
+    def forward(self, feats, img_name="test", vis_batch_idx=0, vis_attention=True):
+        """feats: tuple/list of (p3_feat, p4_feat, p5_feat) where p3 has highest resolution (e.g. 1/8), p5 lowest
+        (1/32).
+
         Returns:
-           edge_map_full: (B, nc, H, W) where H,W == self.out_size
-           attns: dict of scale features {'p3':..., 'p4':..., 'p5':...}
+            edge_map_full: (B, nc, H, W) where H,W == self.out_size
+            attns: dict of scale features {'p3':..., 'p4':..., 'p5':...}.
         """
         p2, p3, p4, p5 = feats  # expect tensors
 
         # reduce channels to common mid_ch
-        r2 = self.reduce_p2(p2)   # B x mid x H1 x W1
-        r3 = self.reduce_p3(p3)   # B x mid x H3 x W3
-        r4 = self.reduce_p4(p4)   # B x mid x H4 x W4
-        r5 = self.reduce_p5(p5)   # B x mid x H5 x W5
+        r2 = self.reduce_p2(p2)  # B x mid x H1 x W1
+        r3 = self.reduce_p3(p3)  # B x mid x H3 x W3
+        r4 = self.reduce_p4(p4)  # B x mid x H4 x W4
+        r5 = self.reduce_p5(p5)  # B x mid x H5 x W5
 
         # upsample r4 and r5 to r3 size
         size2 = r2.shape[2:]
-        r3_up = F.interpolate(r3, size=size2, mode='bilinear', align_corners=False)
-        r4_up = F.interpolate(r4, size=size2, mode='bilinear', align_corners=False)
-        r5_up = F.interpolate(r5, size=size2, mode='bilinear', align_corners=False)
+        r3_up = F.interpolate(r3, size=size2, mode="bilinear", align_corners=False)
+        r4_up = F.interpolate(r4, size=size2, mode="bilinear", align_corners=False)
+        r5_up = F.interpolate(r5, size=size2, mode="bilinear", align_corners=False)
 
         # fuse at p3 resolution
-        fused = torch.cat([r2,r3_up, r4_up, r5_up], dim=1)  # B x (mid*3) x H3 x W3
+        fused = torch.cat([r2, r3_up, r4_up, r5_up], dim=1)  # B x (mid*3) x H3 x W3
         fused = self.drop(fused)
-        ctx = self.aspp(fused)        # B x (mid*2) x H3 x W3
-        feat = self.refine(ctx)       # B x mid x H3 x W3
+        ctx = self.aspp(fused)  # B x (mid*2) x H3 x W3
+        feat = self.refine(ctx)  # B x mid x H3 x W3
 
         # per-class edge prediction at p3 resolution, then upsample to full image
-        edge_p2 = self.edge_pred(feat)   # B x nc x H3 x W3
-        edge_full = F.interpolate(edge_p2, size=self.out_size, mode='bilinear', align_corners=False)
-        edge_map_full = torch.sigmoid(edge_full)   # confidence per class boundary
+        edge_p2 = self.edge_pred(feat)  # B x nc x H3 x W3
+        edge_full = F.interpolate(edge_p2, size=self.out_size, mode="bilinear", align_corners=False)
+        edge_map_full = torch.sigmoid(edge_full)  # confidence per class boundary
 
         # produce per-scale attention features (for BAM/neck)
-        feat = F.interpolate(feat, size=size2, mode='bilinear', align_corners=False)
+        feat = F.interpolate(feat, size=size2, mode="bilinear", align_corners=False)
         att_p2 = self.att_p2(feat)
         att_p3 = self.att_p3(r3)  # B x att_ch x H3 x W3
         # downsample feature to p4 and p5 resolution for attention generation
         # compute att on r4/r5 aligned features:
-        att_p4 = self.att_p4(r4)    # B x att_ch x H4 x W4
-        att_p5 = self.att_p5(r5)    # B x att_ch x H5 x W5
+        att_p4 = self.att_p4(r4)  # B x att_ch x H4 x W4
+        att_p5 = self.att_p5(r5)  # B x att_ch x H5 x W5
 
         # Optionally normalize attentions to [0,1] if used multiplicatively:
         # att_p3 = torch.sigmoid(att_p3); att_p4 = torch.sigmoid(att_p4); att_p5 = torch.sigmoid(att_p5)
 
-        attns = {'p2': att_p2,'p3': att_p3, 'p4': att_p4, 'p5': att_p5}
+        attns = {"p2": att_p2, "p3": att_p3, "p4": att_p4, "p5": att_p5}
         # -------------------------- 新增：注意力可视化调用 --------------------------
         if vis_attention:
             visualize_attention_maps(
@@ -396,120 +436,132 @@ class edge(nn.Module):
                 batch_idx=vis_batch_idx,
                 img_name=img_name,
                 save_dir=Path("/home/dsj/code/yolov5_modify/runs_edge_p2_sim"),  # 注意力图固定保存路径
-                resize_to=self.out_size  # 上采样到原始图像尺寸，方便和边缘图/原图对比
+                resize_to=self.out_size,  # 上采样到原始图像尺寸，方便和边缘图/原图对比
             )
         # -------------------------------------------------------------------------
 
         return edge_map_full, attns
 
+
 class SeparableConv2d(nn.Module):
-    def __init__(self, inplanes, planes, kernel_size=3, stride=1, dilation=1, relu_first=True,
-                 bias=False, norm_layer=nn.BatchNorm2d):
+    def __init__(
+        self,
+        inplanes,
+        planes,
+        kernel_size=3,
+        stride=1,
+        dilation=1,
+        relu_first=True,
+        bias=False,
+        norm_layer=nn.BatchNorm2d,
+    ):
         super().__init__()
-        depthwise = nn.Conv2d(inplanes, inplanes, kernel_size,
-                              stride=stride, padding=dilation,
-                              dilation=dilation, groups=inplanes, bias=bias)
+        depthwise = nn.Conv2d(
+            inplanes,
+            inplanes,
+            kernel_size,
+            stride=stride,
+            padding=dilation,
+            dilation=dilation,
+            groups=inplanes,
+            bias=bias,
+        )
         bn_depth = norm_layer(inplanes)
         pointwise = nn.Conv2d(inplanes, planes, 1, bias=bias)
         bn_point = norm_layer(planes)
 
         if relu_first:
-            self.block = nn.Sequential(nn.ReLU(),depthwise,bn_depth,pointwise,bn_point)
+            self.block = nn.Sequential(nn.ReLU(), depthwise, bn_depth, pointwise, bn_point)
         else:
-            self.block = nn.Sequential(depthwise, bn_depth, nn.ReLU(inplace=True), pointwise, bn_point, nn.ReLU(inplace=True))
+            self.block = nn.Sequential(
+                depthwise, bn_depth, nn.ReLU(inplace=True), pointwise, bn_point, nn.ReLU(inplace=True)
+            )
 
     def forward(self, x):
         return self.block(x)
 
 
 class BAM(nn.Module):
-    """
-    Boundary Attention Module
-    输入:
-        - feat: YOLO 主干或 neck 特征 (B, C, H, W)
-        - edge: 边缘特征 (B, 1 or k, H, W)
+    """Boundary Attention Module 输入: - feat: YOLO 主干或 neck 特征 (B, C, H, W) - edge: 边缘特征 (B, 1 or k, H, W).
 
     输出:
         - 融合后的特征 (B, C, H, W)
     """
+
     def __init__(self, feat_channels, edge_channels=1, reduction=8):
         super().__init__()
 
         # Step1: 把 edge 通道压成 1 通道（保持空间信息）
         self.edge_conv = nn.Sequential(
             nn.Conv2d(edge_channels, 1, 3, padding=1),
-            nn.Sigmoid()         # 归一化
+            nn.Sigmoid(),  # 归一化
         )
 
         # Step2: 用 1×1 conv 调整 feat 的 channel，增强表达能力
         self.feat_proj = nn.Conv2d(feat_channels, feat_channels, 1)
 
     def forward(self, x):
+        """feat: (B, C, H, W) edge: (B, k, H, W).
         """
-        feat: (B, C, H, W)
-        edge: (B, k, H, W)
-        """
-        c=x[0];att_map=x[1][1]
-        sizes=[att_map['p2'].size()[2:], att_map['p3'].size()[2:], att_map['p4'].size()[2:], att_map['p5'].size()[2:]]
+        c = x[0]
+        att_map = x[1][1]
+        sizes = [att_map["p2"].size()[2:], att_map["p3"].size()[2:], att_map["p4"].size()[2:], att_map["p5"].size()[2:]]
         for i in range(len(sizes)):
             if c.size()[2:] == sizes[i]:
-                att_map=att_map['p'+str(i+2)]
+                att_map = att_map["p" + str(i + 2)]
                 break
         # edge attention map
-        att = self.edge_conv(att_map)           # (B,1,H,W)
+        att = self.edge_conv(att_map)  # (B,1,H,W)
 
         # channel enhance
-        f = self.feat_proj(c)             # (B,C,H,W)
+        f = self.feat_proj(c)  # (B,C,H,W)
 
         # apply BAM (broadcast)
-        out = f * (1 + att)                  # (B,C,H,W)
+        out = f * (1 + att)  # (B,C,H,W)
 
         return out
- 
+
+
 class BAM_(nn.Module):
-    """
-    Boundary Attention Module
-    输入:
-        - feat: YOLO 主干或 neck 特征 (B, C, H, W)
-        - edge: 边缘特征 (B, 1 or k, H, W)
+    """Boundary Attention Module 输入: - feat: YOLO 主干或 neck 特征 (B, C, H, W) - edge: 边缘特征 (B, 1 or k, H, W).
 
     输出:
         - 融合后的特征 (B, C, H, W)
     """
+
     def __init__(self, feat_channels, edge_channels=1, reduction=8):
         super().__init__()
 
         # Step1: 把 edge 通道压成 1 通道（保持空间信息）
         self.edge_conv = nn.Sequential(
             nn.Conv2d(edge_channels, 1, 3, padding=1),
-            nn.Sigmoid()         # 归一化
+            nn.Sigmoid(),  # 归一化
         )
 
         # Step2: 用 1×1 conv 调整 feat 的 channel，增强表达能力
         self.feat_proj = nn.Conv2d(feat_channels, feat_channels, 1)
 
     def forward(self, x):
+        """feat: (B, C, H, W) edge: (B, k, H, W).
         """
-        feat: (B, C, H, W)
-        edge: (B, k, H, W)
-        """
-        c=x[0];att_map=x[1][1]
-        sizes=[att_map['p3'].size()[2:], att_map['p4'].size()[2:], att_map['p5'].size()[2:]]
+        c = x[0]
+        att_map = x[1][1]
+        sizes = [att_map["p3"].size()[2:], att_map["p4"].size()[2:], att_map["p5"].size()[2:]]
         for i in range(len(sizes)):
             if c.size()[2:] == sizes[i]:
-                att_map=att_map['p'+str(i+3)]
+                att_map = att_map["p" + str(i + 3)]
                 break
         # edge attention map
-        att = self.edge_conv(att_map)           # (B,1,H,W)
+        att = self.edge_conv(att_map)  # (B,1,H,W)
 
         # channel enhance
-        f = self.feat_proj(c)             # (B,C,H,W)
+        f = self.feat_proj(c)  # (B,C,H,W)
 
         # apply BAM (broadcast)
-        out = f * (1 + att)                  # (B,C,H,W)
+        out = f * (1 + att)  # (B,C,H,W)
 
         return out
-    
+
 
 class Detect(nn.Module):
     """YOLOv5 Detect head for processing input tensors and generating detection outputs in object detection models."""
@@ -602,7 +654,7 @@ class BaseModel(nn.Module):
 
     def _forward_once(self, x, profile=False, visualize=False):
         """Performs a forward pass on the YOLOv5 model, enabling profiling and feature visualization options."""
-        size = x.size()[2:]
+        x.size()[2:]
         y, dt = [], []  # outputs
         for m in self.model:
             if m.f != -1:  # if not from previous layer
@@ -610,12 +662,12 @@ class BaseModel(nn.Module):
             if profile:
                 self._profile_one_layer(m, x, dt)
             x = m(x)  # run
-            if m.i== 10:
+            if m.i == 10:
                 predict_edge = x[0]
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
-        return x,predict_edge
+        return x, predict_edge
 
     def _profile_one_layer(self, m, x, dt):
         """Profiles a single layer's performance by computing GFLOPs, execution time, and parameters."""
@@ -663,7 +715,7 @@ class BaseModel(nn.Module):
 class DetectionModel(BaseModel):
     """YOLOv5 detection model class for object detection tasks, supporting custom configurations and anchors."""
 
-    def __init__(self, cfg="yolov5s.yaml",  ch=4, nc=None, anchors=None):
+    def __init__(self, cfg="yolov5s.yaml", ch=4, nc=None, anchors=None):
         """Initializes YOLOv5 model with configuration file, input channels, number of classes, and custom anchors."""
         super().__init__()
         if isinstance(cfg, dict):
@@ -760,8 +812,7 @@ class DetectionModel(BaseModel):
         return y
 
     def _initialize_biases(self, cf=None):
-        """
-        Initializes biases for YOLOv5's Detect() module, optionally using class frequencies (cf).
+        """Initializes biases for YOLOv5's Detect() module, optionally using class frequencies (cf).
 
         For details see https://arxiv.org/abs/1708.02002 section 3.3.
         """
@@ -783,7 +834,9 @@ class SegmentationModel(DetectionModel):
     """YOLOv5 segmentation model for object detection and segmentation tasks with configurable parameters."""
 
     def __init__(self, cfg="yolov5s-seg.yaml", ch=3, nc=None, anchors=None):
-        """Initializes a YOLOv5 segmentation model with configurable params: cfg (str) for configuration, ch (int) for channels, nc (int) for num classes, anchors (list)."""
+        """Initializes a YOLOv5 segmentation model with configurable params: cfg (str) for configuration, ch (int) for
+        channels, nc (int) for num classes, anchors (list).
+        """
         super().__init__(cfg, ch, nc, anchors)
 
 
@@ -889,8 +942,8 @@ def parse_model(d, ch):
             if m is Segment:
                 args[3] = make_divisible(args[3] * gw, ch_mul)
         elif m is edge:
-           c2=args[0]
-           args = [[ch[x] for x in f],*args[1:]]
+            c2 = args[0]
+            args = [[ch[x] for x in f], *args[1:]]
         elif m is Contract:
             c2 = ch[f] * args[0] ** 2
         elif m is Expand:
@@ -902,7 +955,7 @@ def parse_model(d, ch):
         t = str(m)[8:-2].replace("__main__.", "")  # module type
         np = sum(x.numel() for x in m_.parameters())  # number params
         m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params
-        LOGGER.info(f"{i:>3}{str(f):>18}{n_:>3}{np:10.0f}  {t:<40}{str(args):<30}")  # print
+        LOGGER.info(f"{i:>3}{f!s:>18}{n_:>3}{np:10.0f}  {t:<40}{args!s:<30}")  # print
         save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
         layers.append(m_)
         if i == 0:
