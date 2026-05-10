@@ -183,7 +183,7 @@ class LoadImagesAndLabelsAndMasks(LoadImagesAndLabels):  # for training/testing
         if nl:
             labels[:, 1:5] = xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], clip=True, eps=1e-3)
             if self.overlap:
-                masks,edges, sorted_idx = polygons2masks_overlap(
+                masks, edges, sorted_idx = polygons2masks_overlap(
                     img.shape[:2], segments, downsample_ratio=self.downsample_ratio
                 )
                 masks = masks[None]  # (640, 640) -> (1, 640, 640)
@@ -308,17 +308,16 @@ class LoadImagesAndLabelsAndMasks(LoadImagesAndLabels):  # for training/testing
     @staticmethod
     def collate_fn(batch):
         """Custom collation function for DataLoader, batches images, labels, paths, shapes, and segmentation masks."""
-        img, label, path, shapes, masks,edges = zip(*batch)  # transposed
+        img, label, path, shapes, masks, edges = zip(*batch)  # transposed
         batched_masks = torch.cat(masks, 0)
         batched_edges = torch.cat(edges, 0)
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
         return torch.stack(img, 0), torch.cat(label, 0), path, shapes, batched_masks, batched_edges
 
+
 def save_edge_map(edge_map, save_path="/home/dsj/code/yolov5_headseg/edge_vis.png"):
-    """
-    edge_map: torch.Tensor (1, H, W)  或 (H, W)
-    save_path: 保存路径
+    """edge_map: torch.Tensor (1, H, W) 或 (H, W) save_path: 保存路径.
     """
     # 如果是 (1,H,W)，先 squeeze
     if edge_map.ndim == 3:
@@ -352,13 +351,13 @@ def polygon2mask(img_size, polygons, color=1, downsample_ratio=1):
     nh, nw = (img_size[0] // downsample_ratio, img_size[1] // downsample_ratio)
     # NOTE: fillPoly firstly then resize is trying the keep the same way
     # of loss calculation when mask-ratio=1.
-    kernel = np.ones((3, 3), np.uint8) 
-    edge_map = cv2.morphologyEx(mask, cv2.MORPH_GRADIENT, kernel) 
-    #edge_map = torch.from_numpy(edge_map).unsqueeze(0)
-    #save_edge_map(edge_map)
+    kernel = np.ones((3, 3), np.uint8)
+    edge_map = cv2.morphologyEx(mask, cv2.MORPH_GRADIENT, kernel)
+    # edge_map = torch.from_numpy(edge_map).unsqueeze(0)
+    # save_edge_map(edge_map)
     mask = cv2.resize(mask, (nw, nh))
-    edge= cv2.resize(edge_map, (nw, nh))
-    return mask,edge
+    edge = cv2.resize(edge_map, (nw, nh))
+    return mask, edge
 
 
 def polygons2masks(img_size, polygons, color, downsample_ratio=1):
@@ -383,15 +382,15 @@ def polygons2masks_overlap(img_size, segments, downsample_ratio=1):
         (img_size[0] // downsample_ratio, img_size[1] // downsample_ratio),
         dtype=np.int32 if len(segments) > 255 else np.uint8,
     )
-    edge_map=np.zeros(
+    edge_map = np.zeros(
         (img_size[0] // downsample_ratio, img_size[1] // downsample_ratio),
         dtype=np.int32 if len(segments) > 255 else np.uint8,
     )
     areas = []
     ms = []
-    ed=[]
+    ed = []
     for si in range(len(segments)):
-        mask,edge = polygon2mask(
+        mask, edge = polygon2mask(
             img_size,
             [segments[si].reshape(-1)],
             downsample_ratio=downsample_ratio,
@@ -406,8 +405,8 @@ def polygons2masks_overlap(img_size, segments, downsample_ratio=1):
     ed = np.array(ed)[index]
     for i in range(len(segments)):
         mask = ms[i] * (i + 1)
-        edge_map=edge_map+ed[i]
+        edge_map = edge_map + ed[i]
         masks = masks + mask
         edge_map = np.clip(edge_map, a_min=0, a_max=1)
         masks = np.clip(masks, a_min=0, a_max=i + 1)
-    return masks, edge_map,index
+    return masks, edge_map, index

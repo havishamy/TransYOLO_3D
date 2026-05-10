@@ -16,7 +16,9 @@ from ..plots import Annotator, colors
 
 
 @threaded
-def plot_images_and_masks(images, targets, masks,edge, paths=None, fname="images.jpg",fname_edge="edge.jpg", names=None):
+def plot_images_and_masks(
+    images, targets, masks, edge, paths=None, fname="images.jpg", fname_edge="edge.jpg", names=None
+):
     """Plots a grid of images, their labels, and masks with optional resizing and annotations, saving to fname."""
     if isinstance(images, torch.Tensor):
         images = images.cpu().float().numpy()
@@ -30,20 +32,20 @@ def plot_images_and_masks(images, targets, masks,edge, paths=None, fname="images
     max_size = 2560  # max image size
     max_subplots = 16  # max image subplots, i.e. 4x4
     bs, c, h, w = images.shape  # batch size, _, height, width
-    if c==4:
-        hl=images[:,0,:,:]
-        images=images[:,1:4,:,:]
-        hl*=255
+    if c == 4:
+        hl = images[:, 0, :, :]
+        images = images[:, 1:4, :, :]
+        hl *= 255
     bs = min(bs, max_subplots)  # limit plot images
     ns = np.ceil(bs**0.5)  # number of subplots (square)
     if np.max(images[0]) <= 1:
         images *= 255  # de-normalise (optional)
-    edge*=255
+    edge *= 255
     # Build Image
     if len(edge.shape) == 3:
-        bs,h1,w1=edge.shape
+        bs, h1, w1 = edge.shape
     else:
-        bs,_, h1, w1 = edge.shape
+        bs, _, h1, w1 = edge.shape
     mosaic = np.full((int(ns * h), int(ns * w), 3), 255, dtype=np.uint8)  # init
     mosaic1 = np.full((int(ns * h1), int(ns * w1)), 0, dtype=np.uint8)
     for i, ed in enumerate(edge):
@@ -52,7 +54,7 @@ def plot_images_and_masks(images, targets, masks,edge, paths=None, fname="images
         x, y = int(w1 * (i // ns)), int(h1 * (i % ns))  # block origin
         mosaic1[y : y + h1, x : x + w1] = ed
     cv2.imwrite(fname_edge, mosaic1)
-    '''
+    """
     # Resize (optional)
     scale = max_size / ns / max(h, w)
     if scale < 1:
@@ -60,7 +62,7 @@ def plot_images_and_masks(images, targets, masks,edge, paths=None, fname="images
         w = math.ceil(scale * w)
         mosaic1 = cv2.resize(mosaic1, tuple(int(x * ns) for x in (w, h)))
     
-    '''   
+    """
 
     for i, im in enumerate(images):
         if i == max_subplots:  # if last batch has fewer images than we expect
